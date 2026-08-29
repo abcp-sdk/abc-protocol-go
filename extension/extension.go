@@ -2,8 +2,10 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
+	"time"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
@@ -56,6 +58,10 @@ type Config struct {
 	OnEventHook    OnEventHook
 	OnConfigChange OnConfigChangeFunc
 	OnLifecycle    OnLifecycleFunc
+	// OnInterrupt is called after an interrupt signal cancelled the
+	// session's in-flight calls. When nil, interrupts fall back to
+	// OnEventHook(ctx, "interrupt", ...).
+	OnInterrupt func(ctx context.Context, sessionName, reason string)
 }
 
 // OnLifecycleFunc receives session lifecycle events. Returning an error is
@@ -183,6 +189,7 @@ func (e *Extension) Manifest() abcprotocol.ExtensionManifest { return e.manifest
 
 // Serve registers discovery/tool/variable/hook channels and blocks until ctx done.
 func (e *Extension) Serve(ctx context.Context) error {
+	e.startPresence(ctx)
 	if err := e.serveDiscovery(ctx); err != nil {
 		return err
 	}
@@ -215,7 +222,37 @@ func (e *Extension) Close() error {
 		_ = s.Close()
 	}
 	e.subs = nil
+	// leave the presence bucket: agents watching liveness see us go.
+	_ = e.b.KVDelete(context.Background(), PresenceBucket, e.cfg.ID)
 	return e.b.Close()
+}
+
+// PresenceBucket carries extension liveness: key = extId, value = the
+// discovery manifest, TTL = PresenceTTL refreshed every PresenceInterval.
+const PresenceBucket = "abc-presence"
+const PresenceTTL = 15 * 1000
+const presenceInterval = 5 * time.Second
+
+func (e *Extension) startPresence(ctx context.Context) {
+	put := func() {
+		raw, err := json.Marshal(e.manifest)
+		if err == nil {
+			_ = e.b.KVPut(ctx, PresenceBucket, e.cfg.ID, string(raw), PresenceTTL)
+		}
+	}
+	put()
+	go func() {
+		t := time.NewTicker(presenceInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				put()
+			}
+		}
+	}()
 }
 
 // ReportProgress reports in-flight progress for a tool call.
@@ -514,7 +551,9 @@ func (e *Extension) serveInterrupt(ctx context.Context) error {
 			} else {
 				e.cancelAllInflight()
 			}
-			if e.cfg.OnEventHook != nil {
+			if e.cfg.OnInterrupt != nil {
+				e.cfg.OnInterrupt(ctx, deref(sessionName), deref(sig.Reason))
+			} else if e.cfg.OnEventHook != nil {
 				_ = e.cfg.OnEventHook(ctx, "interrupt", deref(sessionName), sig.Reason)
 			}
 		}

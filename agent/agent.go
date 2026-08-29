@@ -2,10 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
+	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/extension"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
 )
 
@@ -30,6 +34,8 @@ type Agent struct {
 	b               bus.Bus
 	configAuthority *ConfigAuthority
 	manifestCache   map[string]abcprotocol.ExtensionManifest
+	presenceMu      sync.Mutex
+	presenceOnce    sync.Once
 }
 
 func New(b bus.Bus) *Agent {
@@ -40,6 +46,23 @@ func (a *Agent) Bus() bus.Bus { return a.b }
 
 // Discover collects every reachable extension manifest.
 func (a *Agent) Discover(ctx context.Context, maxWaitMs int) ([]abcprotocol.ExtensionManifest, error) {
+	// Presence-first: extensions heartbeat their manifests into the
+	// abc-presence KV bucket; the watcher keeps the cache live (offline
+	// extensions drop out via key TTL). Only a cold cache falls back to the
+	// broadcast.
+	a.ensurePresence(ctx)
+	a.presenceMu.Lock()
+	n := len(a.manifestCache)
+	a.presenceMu.Unlock()
+	if n > 0 {
+		out := make([]abcprotocol.ExtensionManifest, 0, n)
+		a.presenceMu.Lock()
+		for _, m := range a.manifestCache {
+			out = append(out, m)
+		}
+		a.presenceMu.Unlock()
+		return out, nil
+	}
 	replies, err := a.b.RequestMany(ctx, protocol.ChDiscover, map[string]any{}, bus.RequestOpts{MaxWaitMs: maxWaitMs})
 	if err != nil {
 		return nil, err
@@ -59,6 +82,37 @@ func (a *Agent) Discover(ctx context.Context, maxWaitMs int) ([]abcprotocol.Exte
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// ensurePresence starts the abc-presence watcher once per agent. It fills
+// manifestCache from the bucket snapshot and live updates (puts and TTL
+// expiries both arrive), so Discover serves from cache without polling.
+func (a *Agent) ensurePresence(ctx context.Context) {
+	a.presenceOnce.Do(func() {
+		ch, stop, err := a.b.KvWatch(ctx, extension.PresenceBucket, ">")
+		if err != nil {
+			a.presenceOnce = sync.Once{} // allow a later retry
+			return
+		}
+		go func() {
+			for ev := range ch {
+				if ev.Key == "" {
+					continue
+				}
+				if ev.Deleted {
+					a.presenceMu.Lock()
+					delete(a.manifestCache, ev.Key)
+					a.presenceMu.Unlock()
+					continue
+				}
+				var m abcprotocol.ExtensionManifest
+				if json.Unmarshal([]byte(ev.Value), &m) == nil && m.Id != "" {
+					a.cacheManifest(m)
+				}
+			}
+		}()
+		_ = stop
+	})
 }
 
 // CallTool invokes a tool and returns its single terminal result. The
@@ -194,9 +248,17 @@ func (a *Agent) PublishMailbox(ctx context.Context, sessionName, typ string, pay
 	return a.b.InboxPublish(ctx, protocol.ChMailbox(sessionName), abcprotocol.MailboxMessage{Id: id, Type: typ, Payload: payload}, bus.InboxPublishOpts{ID: id, SessionName: sessionName})
 }
 
+// TermError is returned by a mailbox handler to terminate a message:
+// delivery stops and (unless NoDLQ) the message is copied to the
+// dead-letter stream for triage.
+type TermError struct{ NoDLQ bool }
+
+func (e *TermError) Error() string { return "terminated by consumer" }
+
 // ConsumeMailbox consumes the durable mailbox wildcard with explicit
-// ack/nak/term, resolving each message to its session. handler errors nak
-// (redelivery after delayMs); malformed messages are acked and skipped.
+// ack/nak/term, resolving each message to its session. Handler errors nak
+// (redelivery after delayMs); *TermError terms (optionally without the
+// dead-letter copy); malformed messages are acked and skipped.
 // The returned cancel func closes the subscription.
 func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageResolved) error, nakDelayMs int) (func(), error) {
 	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: protocol.MailboxWildcard + ">"})
@@ -219,8 +281,52 @@ func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageR
 				msg.Ack()
 				continue
 			}
-			if handler(MailboxMessageResolved{ID: m.Id, SessionName: sessionName, Type: m.Type, Payload: m.Payload}) != nil {
+			switch err := handler(MailboxMessageResolved{ID: m.Id, SessionName: sessionName, Type: m.Type, Payload: m.Payload}); {
+			case err == nil:
+				msg.Ack()
+			default:
+				var te *TermError
+				if errors.As(err, &te) {
+					if te.NoDLQ {
+						msg.TermNoDLQ()
+					} else {
+						msg.Term()
+					}
+					break
+				}
 				msg.Nak(nakDelayMs)
+			}
+		}
+	}()
+	return func() { _ = sub.Close() }, nil
+}
+
+// ConsumeDLQ consumes the dead-letter stream (abc.dlq.<token>): messages
+// that a consumer Term()'d, kept in their original shape for inspection.
+// This is the ops surface for poison-message triage.
+func (a *Agent) ConsumeDLQ(ctx context.Context, handler func(MailboxMessageResolved) error) (func(), error) {
+	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: "abc.dlq.>"})
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			msg, ok := sub.Next(ctx)
+			if !ok {
+				return
+			}
+			env := msg.Envelope
+			sessionName := ""
+			if env.SessionName != nil {
+				sessionName = *env.SessionName
+			}
+			var m abcprotocol.MailboxMessage
+			if sessionName == "" || env.Id == nil || !protocol.Coerce(env.Payload, &m) {
+				msg.TermNoDLQ() // dead letters of dead letters help nobody
+				continue
+			}
+			if handler(MailboxMessageResolved{ID: m.Id, SessionName: sessionName, Type: m.Type, Payload: m.Payload}) != nil {
+				msg.Nak(5000)
 			} else {
 				msg.Ack()
 			}

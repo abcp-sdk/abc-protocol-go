@@ -56,30 +56,11 @@ func (a *Agent) ServeConfig(defaultAck bool) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.configAuthority.cancel = cancel
-	sub, err := a.b.Subscribe(ctx, protocol.ChConfigWildcard(), bus.SubscribeOpts{})
-	if err != nil {
-		cancel()
-		return err
-	}
-	go a.configAuthority.serveLoop(ctx, sub)
 	a.configAuthority.started = true
+	// Snapshot serving moved to the cfg KV bucket: extensions recover state
+	// by reading/watching it, so no abc.config.get subscription remains.
+	_ = ctx
 	return nil
-}
-
-func (c *ConfigAuthority) serveLoop(ctx context.Context, sub bus.Subscription) {
-	for {
-		env, ok := sub.Next(ctx)
-		if !ok {
-			return
-		}
-		if env.ReplyTo == nil {
-			continue
-		}
-		extID := protocol.ConfigExtIDFromGetChannel(env.Ch)
-		var snap abcprotocol.ConfigSnapshot
-		c.fillSnapshot(extID, &snap)
-		_ = c.bus.Publish(ctx, *env.ReplyTo, snap, "")
-	}
 }
 
 // SetConfig validates against the (cached or provided) manifest, persists via
@@ -123,19 +104,38 @@ func (c *ConfigAuthority) declare(m *abcprotocol.ExtensionManifest) {
 	c.recover(m.Id)
 }
 
+// configKVEnvelope is the persisted shape: the value plus the per-key
+// revision, so both survive an agent restart.
+type configKVEnvelope struct {
+	Revision int64 `json:"r"`
+	Value    any   `json:"v"`
+}
+
+func decodeConfigEnvelope(raw string) (configKVEnvelope, bool) {
+	var env configKVEnvelope
+	if json.Unmarshal([]byte(raw), &env) == nil && env.Value != nil {
+		return env, true
+	}
+	// pre-0.2 entries stored the bare value (revision 0)
+	var v any
+	if json.Unmarshal([]byte(raw), &v) == nil {
+		return configKVEnvelope{Revision: 0, Value: v}, true
+	}
+	return configKVEnvelope{}, false
+}
+
 func (c *ConfigAuthority) recover(extID string) {
 	for _, item := range c.declarations[extID] {
 		raw, _ := c.bus.KVGet(context.Background(), protocol.ConfigKVBucket, configKVKey(extID, "global", "", item.Name))
 		if raw == "" {
 			continue
 		}
-		var v any
-		if json.Unmarshal([]byte(raw), &v) == nil {
+		if env, ok := decodeConfigEnvelope(raw); ok {
 			if c.global[extID] == nil {
 				c.global[extID] = map[string]configValue{}
 			}
-			if _, exists := c.global[extID][item.Name]; !exists {
-				c.global[extID][item.Name] = configValue{Revision: 0, Value: v}
+			if cur, exists := c.global[extID][item.Name]; !exists || env.Revision > cur.Revision {
+				c.global[extID][item.Name] = configValue{Revision: env.Revision, Value: env.Value}
 			}
 		}
 	}
@@ -187,8 +187,10 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 		c.sessions[extID][sessionName][name] = configValue{Revision: revision, Value: value}
 	}
 
-	// Persist first (crash-safe).
-	raw, err := json.Marshal(value)
+	// Persist first (crash-safe): the cfg KV bucket is the source of truth —
+	// extensions recover by reading/watching it (revision rides along so a
+	// restarted agent restores its revision counters too).
+	raw, err := json.Marshal(configKVEnvelope{Revision: revision, Value: value})
 	if err == nil {
 		_ = c.bus.KVPut(ctx, protocol.ConfigKVBucket, configKVKey(extID, scope, sessionName, name), string(raw), 0)
 	}
@@ -217,12 +219,12 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 	}
 	reply, err := c.bus.Request(ctx, protocol.ChConfig(extID), setPayload, reqOpts)
 	if err != nil {
-		if !useAck {
-			// No-ack delivery: the extension applies the value without
-			// answering, so the request timing out is expected, not a failure.
-			return nil
-		}
-		return &ConfigError{Code: "retryable", Message: err.Error()}
+		// Delivery is best-effort in the 0.2 model: the value is already
+		// committed to the cfg KV bucket (the source of truth), so an
+		// offline extension (no responders) or a lost race is not a failure
+		// — the extension recovers via its KV watch. Only an explicit
+		// rejection below rolls the value back.
+		return nil
 	}
 	if !useAck {
 		return nil
@@ -327,14 +329,19 @@ func validateConfigValue(item *abcprotocol.ExtensionConfigItem, value any) strin
 
 // manifest returns the cached discovery manifest for extID.
 func (a *Agent) manifest(extID string) *abcprotocol.ExtensionManifest {
+	a.presenceMu.Lock()
+	defer a.presenceMu.Unlock()
 	if m, ok := a.manifestCache[extID]; ok {
-		return &m
+		m2 := m
+		return &m2
 	}
 	return nil
 }
 
 // initManifestCache keeps manifests discovered via Discover() for SetConfig.
 func (a *Agent) cacheManifest(m abcprotocol.ExtensionManifest) {
+	a.presenceMu.Lock()
+	defer a.presenceMu.Unlock()
 	if a.manifestCache == nil {
 		a.manifestCache = map[string]abcprotocol.ExtensionManifest{}
 	}

@@ -76,7 +76,10 @@ func ArgBool(args map[string]any, key string, def bool) bool {
 	}
 	return def
 }
-func ChConfig(extID string) string    { return "abc.config." + extID }
+func ChConfig(extID string) string { return "abc.config." + extID }
+
+// ChConfigGet is DEPRECATED (0.2): config snapshots moved to the cfg KV
+// bucket; extensions recover via KV watch. Kept for external callers.
 func ChConfigGet(extID string) string { return "abc.config.get." + extID }
 func ChConfigWildcard() string        { return "abc.config.get.>" }
 

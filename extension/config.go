@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
@@ -68,28 +69,20 @@ func (e *Extension) rollbackConfigSet(set abcprotocol.ConfigSet) {
 	delete(e.configStore.global, set.Name)
 }
 
-// serveConfig subscribes abc.config.<id> after pulling the startup snapshot.
+// serveConfig subscribes abc.config.<id> (live sets with ack/reject) and
+// recovers state from the cfg KV bucket — the watch delivers the snapshot
+// at startup and live updates afterwards, so no agent needs to be online.
 func (e *Extension) serveConfig(ctx context.Context) error {
 	if len(e.cfg.Config) == 0 {
 		return nil
 	}
-	// Startup snapshot (pre-serve changes); defaults apply when absent.
-	reply, err := e.b.Request(ctx, protocol.ChConfigGet(e.cfg.ID), map[string]any{}, bus.RequestOpts{TimeoutMs: 2000})
-	if err == nil {
-		var snap abcprotocol.ConfigSnapshot
-		if protocol.Coerce(reply.Payload, &snap) {
-			for name, v := range snap.Global {
-				e.configStore.global[name] = v
+	if ch, stop, err := e.b.KvWatch(ctx, protocol.ConfigKVBucket, e.cfg.ID+".>"); err == nil {
+		go func() {
+			for ev := range ch {
+				e.applyConfigKV(ev)
 			}
-			for sess, vals := range snap.Sessions {
-				if e.configStore.session[sess] == nil {
-					e.configStore.session[sess] = map[string]any{}
-				}
-				for name, v := range vals {
-					e.configStore.session[sess][name] = v
-				}
-			}
-		}
+		}()
+		e.subs = append(e.subs, kvWatchStopper{stop})
 	}
 	sub, err := e.b.Subscribe(ctx, protocol.ChConfig(e.cfg.ID), bus.SubscribeOpts{Queue: e.cfg.ID})
 	if err != nil {
@@ -206,6 +199,63 @@ func (e *Extension) DeleteSessionVariables(ctx context.Context, sessionName stri
 		if err := e.b.KVDelete(ctx, protocol.VarsBucket, protocol.SessionVarKey(e.cfg.ID, sessionName, name)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// applyConfigKV applies a cfg-bucket watch entry into the local store. Key
+// layout: <extId>.<name> (global) or <extId>.<session>.<name> (session).
+func (e *Extension) applyConfigKV(ev bus.KvEvent) {
+	rest := strings.TrimPrefix(ev.Key, e.cfg.ID+".")
+	parts := strings.Split(rest, ".")
+	if ev.Deleted {
+		if len(parts) == 1 {
+			delete(e.configStore.global, parts[0])
+		} else if len(parts) == 2 {
+			if m := e.configStore.session[parts[0]]; m != nil {
+				delete(m, parts[1])
+			}
+		}
+		return
+	}
+	// Envelope {r,v} with a bare-value fallback (pre-0.2 entries).
+	var env struct {
+		Revision int64 `json:"r"`
+		Value    any   `json:"v"`
+	}
+	v := any(env.Value)
+	if json.Unmarshal([]byte(ev.Value), &env) == nil && env.Value != nil {
+		v = env.Value
+	} else {
+		var raw any
+		if json.Unmarshal([]byte(ev.Value), &raw) != nil {
+			return
+		}
+		v = raw
+	}
+	if v == nil {
+		return
+	}
+	if len(parts) == 1 {
+		e.configStore.global[parts[0]] = v
+	} else if len(parts) == 2 {
+		if e.configStore.session[parts[0]] == nil {
+			e.configStore.session[parts[0]] = map[string]any{}
+		}
+		e.configStore.session[parts[0]][parts[1]] = v
+	}
+}
+
+// kvWatchStopper adapts a watch cancel func to the Subscription shape so
+// Close() tears everything down.
+type kvWatchStopper struct{ stop func() }
+
+func (k kvWatchStopper) Next(ctx context.Context) (abcprotocol.Envelope, bool) {
+	return abcprotocol.Envelope{}, false
+}
+func (k kvWatchStopper) Close() error {
+	if k.stop != nil {
+		k.stop()
 	}
 	return nil
 }

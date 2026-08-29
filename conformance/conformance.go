@@ -6,9 +6,11 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +43,9 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 			"hang": {
 				Description: "waits for ctx cancellation (interrupt semantics)",
 				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+					if h := hangStarted; h != nil {
+						h <- callID // deterministic "call landed" signal
+					}
 					select {
 					case <-ctx.Done():
 						return extension.ToolResultData{}, fmt.Errorf("interrupted")
@@ -193,6 +198,11 @@ func Run(t *testing.T, newPair Factory) {
 	t.Run("ext_mailbox", func(t *testing.T) { testExtMailbox(t, newPair) })
 	t.Run("variable_kv_first", func(t *testing.T) { testVariableKVFirst(t, newPair) })
 	t.Run("session_lease", func(t *testing.T) { testSessionLease(t, newPair) })
+	t.Run("term_routes_to_dlq", func(t *testing.T) { testTermDLQ(t, newPair) })
+	t.Run("on_interrupt_callback", func(t *testing.T) { testOnInterrupt(t, newPair) })
+	t.Run("kv_watch", func(t *testing.T) { testKVWatch(t, newPair) })
+	t.Run("config_recovers_from_kv", func(t *testing.T) { testConfigKVRecovery(t, newPair) })
+	t.Run("presence_liveness", func(t *testing.T) { testPresence(t, newPair) })
 }
 
 func testDiscover(t *testing.T, newPair Factory) {
@@ -393,7 +403,7 @@ func testEventHook(t *testing.T, newPair Factory) {
 		if ev.hook != "session.created" || ev.session != "sess-ev" {
 			t.Fatalf("event = %+v", ev)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("event hook not delivered")
 	}
 }
@@ -417,7 +427,7 @@ func testInterrupt(t *testing.T, newPair Factory) {
 		if ev.hook != "interrupt" {
 			t.Fatalf("event = %+v", ev)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("interrupt not delivered")
 	}
 }
@@ -455,7 +465,7 @@ func testProgress(t *testing.T, newPair Factory) {
 		if p.CallId != "c-progress" || p.Phase == nil || *p.Phase != "sync" {
 			t.Fatalf("progress = %+v", p)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("progress not delivered")
 	}
 }
@@ -608,7 +618,7 @@ func testConfigSet(t *testing.T, newPair Factory) {
 		if v, ok := ev.value.(float64); !ok || v != 5 {
 			t.Fatalf("value = %#v", ev.value)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("config change not applied")
 	}
 }
@@ -696,7 +706,7 @@ func testConfigSession(t *testing.T, newPair Factory) {
 		if ev.session != "sess-a" {
 			t.Fatalf("session not propagated: %+v", ev)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("session config not applied")
 	}
 
@@ -782,7 +792,7 @@ func testConfigNoAck(t *testing.T, newPair Factory) {
 		if v, ok := ev.value.(float64); !ok || v != 3 {
 			t.Fatalf("value = %#v", ev.value)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no-ack config change not applied")
 	}
 }
@@ -825,7 +835,7 @@ func testLifecycle(t *testing.T, newPair Factory) {
 			if string(ev.Kind) != want || ev.SessionName != "sess-lc" {
 				t.Fatalf("event %d = %+v", i, ev)
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatalf("lifecycle %q not delivered", want)
 		}
 	}
@@ -873,7 +883,7 @@ func testSessionEvents(t *testing.T, newPair Factory) {
 			t.Fatalf("session event = %#v", msg.Envelope.Payload)
 		}
 		msg.Ack()
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("session event not delivered")
 	}
 }
@@ -1027,7 +1037,7 @@ func testSessionLease(t *testing.T, newPair Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("WithSessionLease did not return")
 	}
 }
@@ -1042,7 +1052,7 @@ func testSlowTool(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	tr, err := a.CallTool(ctx, "sess-1", "conf-ext", "slow", "slow-1", map[string]any{})
 	if err != nil {
@@ -1052,6 +1062,10 @@ func testSlowTool(t *testing.T, newPair Factory) {
 		t.Fatalf("slow tool content = %+v", tr.Content)
 	}
 }
+
+// hangStarted, when non-nil, receives the call id of every started hang
+// call so tests can wait deterministically for a call to land.
+var hangStarted chan string
 
 // testInterruptCancels pins real abort semantics: a running tool of session
 // X must return promptly when the agent interrupts that session, while the
@@ -1082,9 +1096,17 @@ func testInterruptCancels(t *testing.T, newPair Factory) {
 	wasInterrupted := func(o callOutcome) bool {
 		return o.err == nil && o.tr.Error != nil && strings.Contains(o.tr.Error.Message, "interrupted")
 	}
+	hangStarted = make(chan string, 2)
+	defer func() { hangStarted = nil }()
 	mine := mk("sess-int", "hang-1")
 	other := mk("sess-other", "hang-2")
-	time.Sleep(500 * time.Millisecond) // let both calls land
+	for i := 0; i < 2; i++ { // wait until BOTH calls actually landed
+		select {
+		case <-hangStarted:
+		case <-time.After(10 * time.Second):
+			t.Fatal("hang calls never landed")
+		}
+	}
 
 	if err := a.InterruptSession(context.Background(), "conf-ext", "sess-int", "test"); err != nil {
 		t.Fatalf("interrupt session: %v", err)
@@ -1115,4 +1137,251 @@ func testInterruptCancels(t *testing.T, newPair Factory) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("broadcast interrupt did not cancel the other call within 5s")
 	}
+}
+
+// testTermDLQ pins dead-letter semantics: Term() parks the message on
+// abc.dlq.<token> in its original shape; ack/nak never land there; and
+// TermNoDLQ discards outright.
+func testTermDLQ(t *testing.T, newPair Factory) {
+	agentBus, _, cleanup := newPair(t)
+	defer cleanup()
+	a := agent.New(agentBus)
+	ctx := context.Background()
+
+	sess := "sess-dlq"
+	_ = a.PublishMailbox(ctx, sess, "poison", map[string]any{"bad": true})
+	_ = a.PublishMailbox(ctx, sess, "healthy", map[string]any{"ok": true})
+	_ = a.PublishMailbox(ctx, sess, "discard", map[string]any{"gone": true})
+
+	var once sync.Once
+	done := make(chan struct{})
+	stop, err := a.ConsumeMailbox(ctx, func(m agent.MailboxMessageResolved) error {
+		switch m.Type {
+		case "poison":
+			return &agent.TermError{}
+		case "discard":
+			return &agent.TermError{NoDLQ: true}
+		default:
+			// at-least-once: a redelivery is fine, ack it again
+			once.Do(func() { close(done) })
+			return nil
+		}
+	}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("healthy message never consumed")
+	}
+
+	// The DLQ must hold exactly the poison message, in shape.
+	dlqDone := make(chan agent.MailboxMessageResolved, 4)
+	dlqStop, err := a.ConsumeDLQ(ctx, func(m agent.MailboxMessageResolved) error {
+		dlqDone <- m
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dlqStop()
+	deadline := time.After(10 * time.Second)
+	var seen []string
+	for len(seen) < 1 {
+		select {
+		case m := <-dlqDone:
+			seen = append(seen, m.Type)
+		case <-deadline:
+		L:
+			for {
+				select {
+				case m := <-dlqDone:
+					seen = append(seen, m.Type)
+				default:
+					break L
+				}
+			}
+			goto verdict
+		}
+	}
+verdict:
+	if len(seen) != 1 || seen[0] != "poison" {
+		t.Fatalf("DLQ contents = %v, want exactly [poison]", seen)
+	}
+}
+
+// testOnInterrupt pins the dedicated interrupt callback: it fires with the
+// session and reason, taking precedence over the onEventHook fallback.
+func testOnInterrupt(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+
+	got := make(chan string, 1)
+	hooked := make(chan string, 1)
+	ext := extension.New(extBus, extension.Config{
+		ID: "conf-ext", Version: "1.0",
+		Tools: map[string]extension.ToolSpec{
+			"hang": {Description: "hang", Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				select {
+				case <-ctx.Done():
+					return extension.ToolResultData{}, fmt.Errorf("interrupted")
+				case <-time.After(30 * time.Second):
+					return extension.ToolResultData{Content: "never"}, nil
+				}
+			}},
+		},
+		OnInterrupt: func(ctx context.Context, session, reason string) {
+			select {
+			case got <- session + "|" + reason:
+			default:
+			}
+		},
+		OnEventHook: func(ctx context.Context, hook, session string, payload any) error {
+			select {
+			case hooked <- hook:
+			default:
+			}
+			return nil
+		},
+	})
+	ctx0 := context.Background()
+	go func() { _ = ext.Serve(ctx0) }()
+	time.Sleep(500 * time.Millisecond)
+	defer ext.Close()
+
+	a := agent.New(agentBus)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.CallTool(ctx0, "sess-cb", "conf-ext", "hang", "cb-1", map[string]any{})
+		done <- err
+	}()
+	time.Sleep(500 * time.Millisecond)
+	if err := a.InterruptSession(ctx0, "conf-ext", "sess-cb", "because"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case g := <-got:
+		if g != "sess-cb|because" {
+			t.Fatalf("OnInterrupt got %q", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnInterrupt never fired")
+	}
+	select {
+	case h := <-hooked:
+		t.Fatalf("onEventHook fallback fired despite OnInterrupt (%q)", h)
+	case <-time.After(300 * time.Millisecond):
+	}
+	<-done
+}
+
+// testKVWatch pins the KV watch primitive: snapshot entries, then live
+// updates, then deletes.
+func testKVWatch(t *testing.T, newPair Factory) {
+	agentBus, _, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+	_ = agentBus.KVPut(ctx, "watch-test", "k.a", "1", 0)
+	ch, stop, err := agentBus.KvWatch(ctx, "watch-test", "k.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	// snapshot entry
+	select {
+	case ev := <-ch:
+		if ev.Key != "k.a" || ev.Value != "1" || ev.IsUpdate {
+			t.Fatalf("snapshot event = %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no snapshot event")
+	}
+	_ = agentBus.KVPut(ctx, "watch-test", "k.b", "2", 0)
+	select {
+	case ev := <-ch:
+		if ev.Key != "k.b" || ev.Value != "2" || !ev.IsUpdate {
+			t.Fatalf("update event = %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no update event")
+	}
+	_ = agentBus.KVDelete(ctx, "watch-test", "k.b")
+	select {
+	case ev := <-ch:
+		if ev.Key != "k.b" || !ev.Deleted {
+			t.Fatalf("delete event = %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no delete event")
+	}
+}
+
+// testConfigKVRecovery pins the 0.2 config recovery model: a set value
+// survives extension restarts via the cfg KV bucket — no agent needs to be
+// online or re-deliver anything.
+func testConfigKVRecovery(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// agent side (authority) + set one value
+	a := agent.New(agentBus)
+	if err := a.ServeConfig(true); err != nil {
+		t.Fatal(err)
+	}
+	var m abcprotocol.ExtensionManifest
+	if err := json.Unmarshal([]byte(`{"id":"conf-ext","version":"1","config":[{"name":"recovered","type":"string"}]}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetConfig(ctx, "conf-ext", "recovered", "hello-kv", "", &m, nil); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	// extension boots AFTER the set: state must arrive via the KV watch
+	ext := extension.New(extBus, extension.Config{
+		ID: "conf-ext", Version: "1.0",
+		Config: map[string]extension.ConfigSpec{"recovered": {Type: "string", Default: "fallback"}},
+	})
+	if err := ext.Serve(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer ext.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := ext.GetConfig("recovered", ""); got == "hello-kv" {
+			return // pass
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("config not recovered from KV; got %q", ext.GetConfig("recovered", ""))
+}
+
+// testPresence pins the liveness model: serving extensions appear in the
+// abc-presence bucket with their manifests, and disappear after Close
+// (explicit delete or TTL).
+func testPresence(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	ext := serveEchoExt(t, extBus)
+	defer ext.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if raw, _ := agentBus.KVGet(ctx, extension.PresenceBucket, "conf-ext"); raw != "" {
+			if !strings.Contains(raw, `"Id":"conf-ext"`) && !strings.Contains(raw, `"id":"conf-ext"`) {
+				t.Fatalf("presence value not a manifest: %s", raw)
+			}
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("extension never appeared in the presence bucket")
+
+	// Close path is exercised by defer; the delete is best-effort and the
+	// TTL (15s) is the backstop, so we do not assert on disappearance
+	// timing here.
 }

@@ -14,7 +14,11 @@ import (
 
 const (
 	streamMailbox   = "ABC_MAILBOX"
+	streamEvents    = "ABC_EVENTS"
+	streamDLQ       = "ABC_DLQ"
 	inboxWildcard   = "abc.mailbox.>"
+	eventsWildcard  = "abc.session.events.>"
+	dlqWildcard     = "abc.dlq.>"
 	durableConsumer = "abc-mailbox-push"
 	queueGroup      = "abc-mailbox"
 	objectBucket    = "ABC_TOOL"
@@ -42,10 +46,38 @@ func Connect(url string) (*Bus, error) {
 		nc.Close()
 		return nil, err
 	}
+	// Two streams, two consumption models: the mailbox is a work queue
+	// (competing consumers, ack on done), session events are a replayable
+	// per-session log. Splitting them lets retention and consumers evolve
+	// independently.
 	if _, err := js.StreamInfo(streamMailbox); err != nil {
 		_, err = js.AddStream(&nats.StreamConfig{
 			Name:     streamMailbox,
-			Subjects: []string{inboxWildcard, "abc.session.events.>"},
+			Subjects: []string{inboxWildcard},
+			MaxAge:   24 * time.Hour,
+		})
+		if err != nil {
+			nc.Close()
+			return nil, err
+		}
+	}
+	if _, err := js.StreamInfo(streamEvents); err != nil {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     streamEvents,
+			Subjects: []string{eventsWildcard},
+			MaxAge:   24 * time.Hour,
+		})
+		if err != nil {
+			nc.Close()
+			return nil, err
+		}
+	}
+	// Dead letters: term() copies the message here before terminating it,
+	// so poison payloads are inspectable instead of vanishing.
+	if _, err := js.StreamInfo(streamDLQ); err != nil {
+		_, err = js.AddStream(&nats.StreamConfig{
+			Name:     streamDLQ,
+			Subjects: []string{dlqWildcard},
 			MaxAge:   24 * time.Hour,
 		})
 		if err != nil {
@@ -54,6 +86,28 @@ func Connect(url string) (*Bus, error) {
 		}
 	}
 	return &Bus{nc: nc, js: js}, nil
+}
+
+// streamFor routes a subject to the stream that captures it (subjects are
+// disjoint by design; the pre-0.2 single ABC_MAILBOX stream also captured
+// session events).
+func streamFor(subject string) string {
+	if strings.HasPrefix(subject, eventsWildcard[:len(eventsWildcard)-1]) {
+		return streamEvents
+	}
+	if strings.HasPrefix(subject, dlqWildcard[:len(dlqWildcard)-1]) {
+		return streamDLQ
+	}
+	return streamMailbox
+}
+
+// dlqSubjectFor maps an original queue subject to its dead-letter subject.
+func dlqSubjectFor(subject string) string {
+	token := subject
+	if i := strings.LastIndex(subject, "."); i >= 0 {
+		token = subject[i+1:]
+	}
+	return dlqWildcard[:len(dlqWildcard)-1] + token
 }
 
 func encode(payload any) ([]byte, error) { return json.Marshal(payload) }
@@ -240,6 +294,16 @@ func (s *inboxSub) Next(ctx context.Context) (*bus.InboxMsg, bool) {
 	msg.SetHandlers(
 		func() { _ = m.Ack() },
 		func(delayMs int) { _ = m.NakWithDelay(time.Duration(delayMs) * time.Millisecond) },
+		// Term copies the message to the dead-letter stream first; use
+		// TermNoDLQ to discard it outright.
+		func() {
+			if id := env.Id; id != nil {
+				_, _ = s.js.Publish(dlqSubjectFor(m.Subject), m.Data, nats.MsgId(*id))
+			} else {
+				_, _ = s.js.Publish(dlqSubjectFor(m.Subject), m.Data)
+			}
+			_ = m.Term()
+		},
 		func() { _ = m.Term() },
 	)
 	return msg, true
@@ -300,6 +364,56 @@ func (b *Bus) KVPut(ctx context.Context, bucket, key, value string, ttlMs int64)
 	return err
 }
 
+// KvWatch streams bucket entries matching keys (NATS wildcard). Snapshot
+// entries arrive first (IsUpdate=false), then live updates; the channel
+// closes when the cancel func runs or ctx ends.
+func (b *Bus) KvWatch(ctx context.Context, bucket, keys string) (<-chan bus.KvEvent, func(), error) {
+	kv, err := b.js.KeyValue(bucket)
+	if err != nil {
+		return nil, nil, err
+	}
+	w, err := kv.Watch(keys)
+	if err != nil {
+		return nil, nil, err
+	}
+	ch := make(chan bus.KvEvent, 32)
+	stop := func() { _ = w.Stop() }
+	go func() {
+		defer close(ch)
+		snapshotDone := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case e, ok := <-w.Updates():
+				if !ok {
+					return
+				}
+				if e == nil {
+					snapshotDone = true
+					continue
+				}
+				ev := bus.KvEvent{
+					Key:      e.Key(),
+					Revision: e.Revision(),
+					IsUpdate: snapshotDone,
+				}
+				if e.Operation() == nats.KeyValuePut {
+					ev.Value = string(e.Value())
+				} else {
+					ev.Deleted = true
+				}
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return ch, stop, nil
+}
+
 func (b *Bus) KVGet(ctx context.Context, bucket, key string) (string, error) {
 	kv, err := b.js.KeyValue(bucket)
 	if err != nil {
@@ -342,7 +456,7 @@ func (b *Bus) KVDelete(ctx context.Context, bucket, key string) error {
 func (b *Bus) Replay(ctx context.Context, ch string) ([]abcprotocol.Envelope, error) {
 	out := []abcprotocol.Envelope{}
 	// Find the stream covering this subject.
-	for _, info := range []string{streamMailbox} {
+	for _, info := range []string{streamEvents, streamMailbox, streamDLQ} {
 		si, err := b.js.StreamInfo(info)
 		if err != nil {
 			continue

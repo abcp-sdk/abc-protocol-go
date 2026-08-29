@@ -39,17 +39,32 @@ type Subscription interface {
 	Close() error
 }
 
+// KvEvent is one KV watch delivery. The initial snapshot arrives first
+// (IsUpdate=false), then live updates.
+type KvEvent struct {
+	Key      string
+	Value    string
+	Revision uint64
+	Deleted  bool
+	IsUpdate bool
+}
+
 // InboxMsg is a durable-inbox message with explicit ack/nak/term.
 type InboxMsg struct {
 	Envelope abcprotocol.Envelope
 	ack      func()
 	nak      func(delayMs int)
 	term     func()
+	termRaw  func()
 }
 
-// SetHandlers wires transport-specific ack/nak/term.
-func (m *InboxMsg) SetHandlers(ack func(), nak func(int), term func()) {
+// SetHandlers wires transport-specific ack/nak/term handlers. The optional
+// fourth handler is a discard-without-dead-letter term.
+func (m *InboxMsg) SetHandlers(ack func(), nak func(int), term func(), termNoDLQ ...func()) {
 	m.ack, m.nak, m.term = ack, nak, term
+	if len(termNoDLQ) > 0 {
+		m.termRaw = termNoDLQ[0]
+	}
 }
 
 func (m *InboxMsg) Ack() {
@@ -62,9 +77,19 @@ func (m *InboxMsg) Nak(delayMs int) {
 		m.nak(delayMs)
 	}
 }
+
+// Term terminates delivery and copies the message to the dead-letter
+// stream (abc.dlq.<token>) for inspection.
 func (m *InboxMsg) Term() {
 	if m.term != nil {
 		m.term()
+	}
+}
+
+// TermNoDLQ terminates delivery without the dead-letter copy.
+func (m *InboxMsg) TermNoDLQ() {
+	if m.termRaw != nil {
+		m.termRaw()
 	}
 }
 
@@ -93,6 +118,10 @@ type Bus interface {
 
 	ObjectPut(ctx context.Context, name string, data []byte) error
 	ObjectGet(ctx context.Context, name string) ([]byte, error)
+
+	// KvWatch streams bucket entries matching keys (NATS wildcard). The
+	// initial snapshot arrives first, then live updates.
+	KvWatch(ctx context.Context, bucket, keys string) (<-chan KvEvent, func(), error)
 
 	KVCreate(ctx context.Context, bucket, key, value string, ttlMs int64) (int64, error)
 	KVPut(ctx context.Context, bucket, key, value string, ttlMs int64) error

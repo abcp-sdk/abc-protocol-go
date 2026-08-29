@@ -9,42 +9,31 @@ import (
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/transport/nats"
 )
 
-var serverURL string
-
-// TestMain starts one nats-server (memory storage) for the whole test run
-// (including -count reruns) and stops it at the end. Falls back to
-// ABC_NATS_URL when the binary is missing.
-func TestMain(m *testing.M) {
-	code := func() int {
-		if url := os.Getenv("ABC_NATS_URL"); url != "" {
-			serverURL = url
-			return m.Run()
-		}
+// TestConformance runs the full protocol suite. Every subtest gets its OWN
+// nats-server (memory) plus two fresh connections (agent + extension roles):
+// a shared broker leaks queue-group subscriptions across subtests during
+// teardown (unsubscribe propagation is asynchronous), which lets a dying
+// extension steal the next subtest's deliveries — flaky under -race and
+// on loaded hosts. A per-subtest broker makes isolation deterministic.
+//
+// When ABC_NATS_URL is set the suite instead runs against that external
+// broker (shared), which is the opt-in mode for live-cluster checks.
+func TestConformance(t *testing.T) {
+	extURL := os.Getenv("ABC_NATS_URL")
+	if extURL == "" {
 		s, err := natsrun.Start(natsrun.Config{Storage: natsrun.Memory})
 		if err != nil {
-			// No local binary: keep serverURL empty; tests skip.
-			return m.Run()
+			t.Skip("no nats-server available (install nats-server or set ABC_NATS_SERVER_BIN or ABC_NATS_URL)")
 		}
-		defer func() { _ = s.Stop() }()
-		serverURL = s.URL()
-		return m.Run()
-	}()
-	os.Exit(code)
-}
-
-// TestConformance runs the full protocol suite against the shared local
-// nats-server; every subtest gets two fresh connections (agent + extension
-// roles) over the same broker.
-func TestConformance(t *testing.T) {
-	if serverURL == "" {
-		t.Skip("no nats-server available (install nats-server or set ABC_NATS_SERVER_BIN or ABC_NATS_URL)")
+		t.Cleanup(func() { _ = s.Stop() })
+		extURL = s.URL()
 	}
 	Run(t, func(t *testing.T) (bus.Bus, bus.Bus, func()) {
-		a, err := nats.Connect(serverURL)
+		a, err := nats.Connect(extURL)
 		if err != nil {
 			t.Fatal(err)
 		}
-		e, err := nats.Connect(serverURL)
+		e, err := nats.Connect(extURL)
 		if err != nil {
 			t.Fatal(err)
 		}
