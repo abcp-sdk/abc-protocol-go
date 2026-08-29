@@ -1,0 +1,104 @@
+package bus
+
+import (
+	"context"
+
+	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
+)
+
+// RequestOpts tunes a request or broadcast.
+type RequestOpts struct {
+	// TimeoutMs bounds a 1:1 request; 0 means no timeout.
+	TimeoutMs int
+	// MaxWaitMs bounds a 1:N collect.
+	MaxWaitMs int
+	// SessionName rides the envelope's first-class session_name field.
+	SessionName string
+}
+
+// SubscribeOpts tunes a subscription.
+type SubscribeOpts struct {
+	Queue string
+}
+
+type InboxConsumeOpts struct {
+	Subject string
+}
+
+type InboxPublishOpts struct {
+	ID string
+	// SessionName rides the envelope's session_name so the consumer can
+	// route the message back to its logical session.
+	SessionName string
+}
+
+// Subscription is a live channel subscription.
+type Subscription interface {
+	// Next blocks until the next envelope or (ctx done / closed).
+	Next(ctx context.Context) (abcprotocol.Envelope, bool)
+	Close() error
+}
+
+// InboxMsg is a durable-inbox message with explicit ack/nak/term.
+type InboxMsg struct {
+	Envelope abcprotocol.Envelope
+	ack      func()
+	nak      func(delayMs int)
+	term     func()
+}
+
+// SetHandlers wires transport-specific ack/nak/term.
+func (m *InboxMsg) SetHandlers(ack func(), nak func(int), term func()) {
+	m.ack, m.nak, m.term = ack, nak, term
+}
+
+func (m *InboxMsg) Ack() {
+	if m.ack != nil {
+		m.ack()
+	}
+}
+func (m *InboxMsg) Nak(delayMs int) {
+	if m.nak != nil {
+		m.nak(delayMs)
+	}
+}
+func (m *InboxMsg) Term() {
+	if m.term != nil {
+		m.term()
+	}
+}
+
+// InboxSubscription consumes durable-inbox messages.
+type InboxSubscription interface {
+	Next(ctx context.Context) (*InboxMsg, bool)
+	Close() error
+}
+
+// Bus is the transport-agnostic message bus. There is exactly one
+// transport (NATS); every listed capability is always available (JetStream).
+type Bus interface {
+	Request(ctx context.Context, ch string, payload any, opts RequestOpts) (abcprotocol.Envelope, error)
+	RequestMany(ctx context.Context, ch string, payload any, opts RequestOpts) ([]abcprotocol.Envelope, error)
+	Publish(ctx context.Context, ch string, payload any, replyTo string) error
+	Subscribe(ctx context.Context, ch string, opts SubscribeOpts) (Subscription, error)
+
+	InboxPublish(ctx context.Context, ch string, payload any, opts InboxPublishOpts) error
+	InboxConsume(ctx context.Context, opts InboxConsumeOpts) (InboxSubscription, error)
+
+	// Replay returns the retained (durably queued) envelopes for a channel,
+	// oldest first. Retention is a transport property (NATS: stream
+	// max_age; inproc/ws: in-memory log) — the protocol promise is only
+	// that a bounded recent window is replayable for events channels.
+	Replay(ctx context.Context, ch string) ([]abcprotocol.Envelope, error)
+
+	ObjectPut(ctx context.Context, name string, data []byte) error
+	ObjectGet(ctx context.Context, name string) ([]byte, error)
+
+	KVCreate(ctx context.Context, bucket, key, value string, ttlMs int64) (int64, error)
+	KVPut(ctx context.Context, bucket, key, value string, ttlMs int64) error
+	KVGet(ctx context.Context, bucket, key string) (string, error)
+	KVCas(ctx context.Context, bucket, key, value string, revision int64) (int64, error)
+	KVDelete(ctx context.Context, bucket, key string) error
+
+	Close() error
+}
