@@ -80,13 +80,12 @@ func (b *Bus) Request(ctx context.Context, ch string, payload any, opts bus.Requ
 			return abcprotocol.Envelope{}, err
 		}
 	}
-	timeout := opts.TimeoutMs
-	if timeout == 0 {
-		timeout = 2000
-	}
+	// TimeoutMs > 0 bounds the request; 0 means no timeout (ctx only).
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
-	defer cancel()
+	if opts.TimeoutMs > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMs)*time.Millisecond)
+		defer cancel()
+	}
 	m, err := b.nc.RequestWithContext(ctx, ch, data)
 	if err != nil {
 		return abcprotocol.Envelope{}, err

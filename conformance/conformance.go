@@ -37,6 +37,13 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 					return extension.ToolResultData{Content: "echo:" + msg}, nil
 				},
 			},
+			"slow": {
+				Description: "sleeps before answering (request-timeout regression)",
+				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+					time.Sleep(2500 * time.Millisecond)
+					return extension.ToolResultData{Content: "woke"}, nil
+				},
+			},
 			"add": {
 				Description: "structured data result",
 				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
@@ -153,6 +160,7 @@ func Run(t *testing.T, newPair Factory) {
 	t.Run("tool_call_id_echo", func(t *testing.T) { testCallID(t, newPair) })
 	t.Run("tool_session_name", func(t *testing.T) { testSessionName(t, newPair) })
 	t.Run("request_timeout_zero_is_bounded", func(t *testing.T) { testUnknownTool(t, newPair) })
+	t.Run("slow_tool_no_request_cap", func(t *testing.T) { testSlowTool(t, newPair) })
 	t.Run("variable", func(t *testing.T) { testVariable(t, newPair) })
 	t.Run("call_hook", func(t *testing.T) { testCallHook(t, newPair) })
 	t.Run("event_hook", func(t *testing.T) { testEventHook(t, newPair) })
@@ -1008,5 +1016,26 @@ func testSessionLease(t *testing.T, newPair Factory) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("WithSessionLease did not return")
+	}
+}
+
+// testSlowTool pins the request contract "TimeoutMs 0 = no transport-level
+// cap": a handler slower than any internal default (2.5s > the old 2s cap)
+// must still answer while the caller ctx allows it.
+func testSlowTool(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+	ext := serveEchoExt(t, extBus)
+	defer ext.Close()
+
+	a := agent.New(agentBus)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tr, err := a.CallTool(ctx, "sess-1", "conf-ext", "slow", "slow-1", map[string]any{})
+	if err != nil {
+		t.Fatalf("slow tool: %v", err)
+	}
+	if tr.Content == nil || *tr.Content != "woke" {
+		t.Fatalf("slow tool content = %+v", tr.Content)
 	}
 }
