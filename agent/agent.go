@@ -124,8 +124,19 @@ func (a *Agent) CallHook(ctx context.Context, extID, hook, sessionName string, a
 }
 
 // Interrupt asks an extension to interrupt in-flight work.
+// Interrupt signals the extension to abort ALL in-flight work (broadcast:
+// no session scoping). For one session use InterruptSession.
 func (a *Agent) Interrupt(ctx context.Context, extID string) error {
-	return a.b.Publish(ctx, protocol.ChInterrupt(extID), map[string]any{}, "")
+	return a.b.Publish(ctx, protocol.ChInterrupt(extID), abcprotocol.InterruptSignal{}, "")
+}
+
+// InterruptSession aborts only the in-flight tool calls of one session.
+func (a *Agent) InterruptSession(ctx context.Context, extID, sessionName string, reason ...string) error {
+	sig := abcprotocol.InterruptSignal{SessionName: &sessionName}
+	if len(reason) > 0 {
+		sig.Reason = &reason[0]
+	}
+	return a.b.Publish(ctx, protocol.ChInterrupt(extID), sig, "")
 }
 
 // PublishLifecycleEvent announces a session lifecycle change on

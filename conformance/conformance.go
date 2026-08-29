@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,17 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
 					msg, _ := args["msg"].(string)
 					return extension.ToolResultData{Content: "echo:" + msg}, nil
+				},
+			},
+			"hang": {
+				Description: "waits for ctx cancellation (interrupt semantics)",
+				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+					select {
+					case <-ctx.Done():
+						return extension.ToolResultData{}, fmt.Errorf("interrupted")
+					case <-time.After(30 * time.Second):
+						return extension.ToolResultData{Content: "never"}, nil
+					}
 				},
 			},
 			"slow": {
@@ -161,6 +173,7 @@ func Run(t *testing.T, newPair Factory) {
 	t.Run("tool_session_name", func(t *testing.T) { testSessionName(t, newPair) })
 	t.Run("request_timeout_zero_is_bounded", func(t *testing.T) { testUnknownTool(t, newPair) })
 	t.Run("slow_tool_no_request_cap", func(t *testing.T) { testSlowTool(t, newPair) })
+	t.Run("interrupt_cancels_inflight_tool", func(t *testing.T) { testInterruptCancels(t, newPair) })
 	t.Run("variable", func(t *testing.T) { testVariable(t, newPair) })
 	t.Run("call_hook", func(t *testing.T) { testCallHook(t, newPair) })
 	t.Run("event_hook", func(t *testing.T) { testEventHook(t, newPair) })
@@ -1037,5 +1050,69 @@ func testSlowTool(t *testing.T, newPair Factory) {
 	}
 	if tr.Content == nil || *tr.Content != "woke" {
 		t.Fatalf("slow tool content = %+v", tr.Content)
+	}
+}
+
+// testInterruptCancels pins real abort semantics: a running tool of session
+// X must return promptly when the agent interrupts that session, while the
+// call of another session is untouched.
+func testInterruptCancels(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+	ext := serveEchoExt(t, extBus)
+	defer ext.Close()
+
+	a := agent.New(agentBus)
+	// tool errors ride in-band: an aborted call returns err==nil with
+	// ToolResult.Error set ("interrupted").
+	type callOutcome struct {
+		tr  agent.ToolResult
+		err error
+	}
+	mk := func(session, callID string) chan callOutcome {
+		ch := make(chan callOutcome, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			tr, err := a.CallTool(ctx, session, "conf-ext", "hang", callID, map[string]any{})
+			ch <- callOutcome{tr: tr, err: err}
+		}()
+		return ch
+	}
+	wasInterrupted := func(o callOutcome) bool {
+		return o.err == nil && o.tr.Error != nil && strings.Contains(o.tr.Error.Message, "interrupted")
+	}
+	mine := mk("sess-int", "hang-1")
+	other := mk("sess-other", "hang-2")
+	time.Sleep(500 * time.Millisecond) // let both calls land
+
+	if err := a.InterruptSession(context.Background(), "conf-ext", "sess-int", "test"); err != nil {
+		t.Fatalf("interrupt session: %v", err)
+	}
+	select {
+	case o := <-mine:
+		if !wasInterrupted(o) {
+			t.Fatalf("interrupted call outcome = %+v / err=%v", o.tr, o.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session interrupt did not cancel its in-flight call within 5s")
+	}
+	select {
+	case o := <-other:
+		t.Fatalf("session-scoped interrupt must not touch other sessions (outcome %+v)", o.tr)
+	default:
+	}
+
+	// broadcast interrupt reaches the remaining session
+	if err := a.Interrupt(context.Background(), "conf-ext"); err != nil {
+		t.Fatalf("interrupt broadcast: %v", err)
+	}
+	select {
+	case o := <-other:
+		if !wasInterrupted(o) {
+			t.Fatalf("broadcast outcome = %+v / err=%v", o.tr, o.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("broadcast interrupt did not cancel the other call within 5s")
 	}
 }

@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"errors"
+	"sync"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
@@ -80,10 +81,15 @@ type Extension struct {
 	manifest    abcprotocol.ExtensionManifest
 	subs        []bus.Subscription
 	configStore *ConfigStore
+
+	// in-flight tool calls per session, so an interrupt signal can cancel
+	// the handlers of that session (interrupt has real abort semantics).
+	inflightMu sync.Mutex
+	inflight   map[string]map[string]context.CancelFunc
 }
 
 func New(b bus.Bus, cfg Config) *Extension {
-	e := &Extension{b: b, cfg: cfg, manifest: abcprotocol.ExtensionManifest{Id: cfg.ID, Version: cfg.Version}, configStore: newConfigStore()}
+	e := &Extension{b: b, cfg: cfg, manifest: abcprotocol.ExtensionManifest{Id: cfg.ID, Version: cfg.Version}, configStore: newConfigStore(), inflight: map[string]map[string]context.CancelFunc{}}
 
 	if len(cfg.Tools) > 0 {
 		caps := []abcprotocol.ExtensionManifestCapabilities{abcprotocol.Tools}
@@ -260,56 +266,73 @@ func (e *Extension) pumpTool(ctx context.Context, name string, spec ToolSpec, su
 		if env.ReplyTo == nil {
 			continue
 		}
-		replyTo := *env.ReplyTo
-		var call abcprotocol.ToolCallEnvelope
-		if !protocol.Coerce(env.Payload, &call) {
-			continue
-		}
-		sessionName := ""
-		if env.SessionName != nil {
-			sessionName = *env.SessionName
-		}
-		res := abcprotocol.ToolResult{CallId: call.CallId, Tool: name}
-		data, err := spec.Execute(ctx, call.Arguments, call.CallId, sessionName)
-		if err != nil {
-			code := abcprotocol.ToolResultErrorCodeInternal
-			var te *TypedError
-			if errors.As(err, &te) {
-				code = te.Code
-			}
-			msg := err.Error()
-			res.Error = &struct {
-				Code    abcprotocol.ToolResultErrorCode `json:"code"`
-				Message string                          `json:"message"`
-			}{Code: code, Message: msg}
-		} else {
-			if len(data.Content) > offloadThreshold {
-				obj := call.CallId + ".data"
-				_ = e.b.ObjectPut(ctx, obj, []byte(data.Content))
-				ct := "text/plain"
-				res.Object = &struct {
-					ContentType *string `json:"content_type,omitempty"`
-					Id          string  `json:"id"`
-				}{ContentType: &ct, Id: obj}
-				preview := data.Content
-				if len(preview) > 400 {
-					preview = preview[:400]
-				}
-				res.Content = &preview
-			} else if data.Content != "" {
-				res.Content = &data.Content
-			}
-			res.Data = data.Data
-			if data.Object != nil {
-				ct := data.Object.ContentType
-				res.Object = &struct {
-					ContentType *string `json:"content_type,omitempty"`
-					Id          string  `json:"id"`
-				}{ContentType: ct, Id: data.Object.Id}
-			}
-		}
-		_ = e.b.Publish(ctx, replyTo, res, "")
+		// Each call runs on its own goroutine: a slow handler must never
+		// head-of-line block other calls to the same tool.
+		go e.handleToolCall(ctx, name, spec, env)
 	}
+}
+
+// handleToolCall executes one tool call and publishes the result envelope.
+func (e *Extension) handleToolCall(ctx context.Context, name string, spec ToolSpec, env abcprotocol.Envelope) {
+	replyTo := ""
+	if env.ReplyTo != nil {
+		replyTo = *env.ReplyTo
+	}
+	var call abcprotocol.ToolCallEnvelope
+	if !protocol.Coerce(env.Payload, &call) || replyTo == "" {
+		return
+	}
+	sessionName := ""
+	if env.SessionName != nil {
+		sessionName = *env.SessionName
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if sessionName != "" {
+		e.trackInflight(sessionName, call.CallId, cancel)
+	}
+	res := abcprotocol.ToolResult{CallId: call.CallId, Tool: name}
+	data, err := spec.Execute(callCtx, call.Arguments, call.CallId, sessionName)
+	e.untrackInflight(sessionName, call.CallId)
+	if err != nil {
+		code := abcprotocol.ToolResultErrorCodeInternal
+		var te *TypedError
+		if errors.As(err, &te) {
+			code = te.Code
+		}
+		msg := err.Error()
+		res.Error = &struct {
+			Code    abcprotocol.ToolResultErrorCode `json:"code"`
+			Message string                          `json:"message"`
+		}{Code: code, Message: msg}
+	} else {
+		if len(data.Content) > offloadThreshold {
+			obj := call.CallId + ".data"
+			_ = e.b.ObjectPut(ctx, obj, []byte(data.Content))
+			ct := "text/plain"
+			res.Object = &struct {
+				ContentType *string `json:"content_type,omitempty"`
+				Id          string  `json:"id"`
+			}{ContentType: &ct, Id: obj}
+			head := data.Content
+			if len(head) > 400 {
+				head = head[:400]
+			}
+			res.Content = &head
+		} else if data.Content != "" {
+			res.Content = &data.Content
+		}
+		if data.Data != nil {
+			res.Data = data.Data
+		}
+		if data.Object != nil {
+			res.Object = &struct {
+				ContentType *string `json:"content_type,omitempty"`
+				Id          string  `json:"id"`
+			}{ContentType: data.Object.ContentType, Id: data.Object.Id}
+		}
+	}
+	_ = e.b.Publish(context.Background(), replyTo, res, "")
 }
 
 func (e *Extension) serveVariables(ctx context.Context) error {
@@ -483,6 +506,14 @@ func (e *Extension) serveInterrupt(ctx context.Context) error {
 			if sessionName == nil {
 				sessionName = env.SessionName
 			}
+			// Abort in-flight tool calls first (real cancel semantics):
+			// a session-scoped signal cancels that session only; a signal
+			// without a session is a broadcast (cancel everything).
+			if s := deref(sessionName); s != "" {
+				e.cancelInflight(s)
+			} else {
+				e.cancelAllInflight()
+			}
 			if e.cfg.OnEventHook != nil {
 				_ = e.cfg.OnEventHook(ctx, "interrupt", deref(sessionName), sig.Reason)
 			}
@@ -496,4 +527,53 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// trackInflight registers a per-call cancel under its session.
+func (e *Extension) trackInflight(session, callID string, cancel context.CancelFunc) {
+	e.inflightMu.Lock()
+	defer e.inflightMu.Unlock()
+	if e.inflight[session] == nil {
+		e.inflight[session] = map[string]context.CancelFunc{}
+	}
+	e.inflight[session][callID] = cancel
+}
+
+// untrackInflight drops the registration (call finished on its own).
+func (e *Extension) untrackInflight(session, callID string) {
+	if session == "" {
+		return
+	}
+	e.inflightMu.Lock()
+	defer e.inflightMu.Unlock()
+	if m := e.inflight[session]; m != nil {
+		delete(m, callID)
+		if len(m) == 0 {
+			delete(e.inflight, session)
+		}
+	}
+}
+
+// cancelInflight aborts every in-flight call of one session.
+func (e *Extension) cancelInflight(session string) {
+	e.inflightMu.Lock()
+	m := e.inflight[session]
+	delete(e.inflight, session)
+	e.inflightMu.Unlock()
+	for _, cancel := range m {
+		cancel()
+	}
+}
+
+// cancelAllInflight aborts every in-flight call of the extension.
+func (e *Extension) cancelAllInflight() {
+	e.inflightMu.Lock()
+	all := e.inflight
+	e.inflight = map[string]map[string]context.CancelFunc{}
+	e.inflightMu.Unlock()
+	for _, m := range all {
+		for _, cancel := range m {
+			cancel()
+		}
+	}
 }
