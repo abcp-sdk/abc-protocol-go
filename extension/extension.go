@@ -95,7 +95,7 @@ type Extension struct {
 }
 
 func New(b bus.Bus, cfg Config) *Extension {
-	e := &Extension{b: b, cfg: cfg, manifest: abcprotocol.ExtensionManifest{Id: cfg.ID, Version: cfg.Version}, configStore: newConfigStore(), inflight: map[string]map[string]context.CancelFunc{}}
+	e := &Extension{b: b, cfg: cfg, manifest: abcprotocol.ExtensionManifest{Id: cfg.ID, Version: cfg.Version, Features: &abcprotocolFeatures}, configStore: newConfigStore(), inflight: map[string]map[string]context.CancelFunc{}}
 
 	if len(cfg.Tools) > 0 {
 		caps := []abcprotocol.ExtensionManifestCapabilities{abcprotocol.Tools}
@@ -226,6 +226,10 @@ func (e *Extension) Close() error {
 	_ = e.b.KVDelete(context.Background(), PresenceBucket, e.cfg.ID)
 	return e.b.Close()
 }
+
+// abcprotocolFeatures is the cooperative feature set this SDK build speaks —
+// advertised on the discovery manifest so agents can degrade gracefully.
+var abcprotocolFeatures = []string{"dlq", "config-kv", "presence", "kv-escaping", "interrupt-abort", "progress"}
 
 // PresenceBucket carries extension liveness: key = extId, value = the
 // discovery manifest, TTL = PresenceTTL refreshed every PresenceInterval.

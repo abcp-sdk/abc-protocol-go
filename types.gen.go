@@ -399,7 +399,8 @@ type ExtensionManifest struct {
 		Scope       *ExtensionManifestConfigScope `json:"scope,omitempty"`
 		Type        ExtensionManifestConfigType   `json:"type"`
 	} `json:"config,omitempty"`
-	Hooks *struct {
+	Features *[]string `json:"features,omitempty"`
+	Hooks    *struct {
 		Call  *[]string `json:"call,omitempty"`
 		Event *[]string `json:"event,omitempty"`
 	} `json:"hooks,omitempty"`

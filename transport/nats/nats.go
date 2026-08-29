@@ -33,8 +33,29 @@ type Bus struct {
 
 var _ bus.Bus = (*Bus)(nil)
 
-// Connect establishes a NATS connection and ensures the mailbox stream.
+// Options tune stream topology and retention at connect time.
+type Options struct {
+	// MaxAge bounds stream retention. Zero means the default (24h).
+	MaxAge time.Duration
+	// Replicas sets the JetStream replica count at stream creation.
+	// Zero means the server default (1). Cannot change after creation.
+	Replicas int
+}
+
+// Connect establishes a NATS connection with the default stream topology.
 func Connect(url string) (*Bus, error) {
+	return ConnectWithOptions(url, Options{})
+}
+
+// ConnectWithOptions establishes a NATS connection and reconciles the
+// protocol stream topology to the desired state (declarative):
+//   - a missing stream is created (retention/replicas from Options)
+//   - an existing stream with drifted subjects is narrowed to the desired
+//     set (this subsumes the 0.1->0.2 mailbox re-layout: the legacy stream
+//     that also captured session events is narrowed so ABC_EVENTS can hold)
+//
+// The fleet never crashes on a layout change — drift is repaired, not fatal.
+func ConnectWithOptions(url string, opts Options) (*Bus, error) {
 	if url == "" {
 		url = nats.DefaultURL
 	}
@@ -47,86 +68,67 @@ func Connect(url string) (*Bus, error) {
 		nc.Close()
 		return nil, err
 	}
-	// Two streams, two consumption models: the mailbox is a work queue
-	// (competing consumers, ack on done), session events are a replayable
-	// per-session log. Splitting them lets retention and consumers evolve
-	// independently.
-	if _, err := js.StreamInfo(streamMailbox); err != nil {
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     streamMailbox,
-			Subjects: []string{inboxWildcard},
-			MaxAge:   24 * time.Hour,
-		})
-		if err != nil {
-			nc.Close()
-			return nil, err
-		}
-	}
-	if _, err := js.StreamInfo(streamEvents); err != nil {
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     streamEvents,
-			Subjects: []string{eventsWildcard},
-			MaxAge:   24 * time.Hour,
-		})
-		if err != nil {
-			// SELF-MIGRATION (0.1 -> 0.2): a pre-0.2 ABC_MAILBOX still
-			// declares abc.session.events.>, which overlaps. Narrow the
-			// legacy stream to its mailbox subjects (mailbox messages are
-			// preserved; historical events stay in the old stream, outside
-			// the new replay window) and retry. The fleet must never crash
-			// on the 0.2 layout migration.
-			if strings.Contains(err.Error(), "subjects overlap") {
-				if migErr := migrateLegacyMailbox(js); migErr == nil {
-					_, err = js.AddStream(&nats.StreamConfig{
-						Name:     streamEvents,
-						Subjects: []string{eventsWildcard},
-						MaxAge:   24 * time.Hour,
-					})
-				}
-			}
-			if err != nil {
-				nc.Close()
-				return nil, err
-			}
-		}
-	}
-	// Dead letters: term() copies the message here before terminating it,
-	// so poison payloads are inspectable instead of vanishing.
-	if _, err := js.StreamInfo(streamDLQ); err != nil {
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     streamDLQ,
-			Subjects: []string{dlqWildcard},
-			MaxAge:   24 * time.Hour,
-		})
-		if err != nil {
-			nc.Close()
-			return nil, err
-		}
+	if err := ensureStreams(js, opts); err != nil {
+		nc.Close()
+		return nil, err
 	}
 	return &Bus{nc: nc, js: js}, nil
 }
 
-// migrateLegacyMailbox narrows a pre-0.2 ABC_MAILBOX (which also captured
-// session events) to its mailbox-only subjects so ABC_EVENTS can be created.
-func migrateLegacyMailbox(js nats.JetStreamContext) error {
-	info, err := js.StreamInfo(streamMailbox)
-	if err != nil {
-		return err
+// ensureStreams reconciles the mailbox/events/dlq streams. Order matters:
+// the mailbox is narrowed FIRST so the events stream (whose subject the
+// legacy mailbox used to also capture) can then be created without an
+// overlap error.
+func ensureStreams(js nats.JetStreamContext, opts Options) error {
+	maxAge := opts.MaxAge
+	if maxAge == 0 {
+		maxAge = 24 * time.Hour
 	}
-	hasEvents := false
-	for _, s := range info.Config.Subjects {
-		if s == eventsWildcard {
-			hasEvents = true
-			break
+	specs := []struct {
+		name     string
+		subjects []string
+	}{
+		{streamMailbox, []string{inboxWildcard}},
+		{streamEvents, []string{eventsWildcard}},
+		{streamDLQ, []string{dlqWildcard}},
+	}
+	for _, s := range specs {
+		info, err := js.StreamInfo(s.name)
+		if err != nil {
+			cfg := &nats.StreamConfig{Name: s.name, Subjects: s.subjects, MaxAge: maxAge}
+			if opts.Replicas > 0 {
+				cfg.Replicas = opts.Replicas
+			}
+			if _, aerr := js.AddStream(cfg); aerr != nil {
+				return fmt.Errorf("add stream %s: %w", s.name, aerr)
+			}
+			continue
+		}
+		if !sameSubjects(info.Config.Subjects, s.subjects) {
+			cfg := info.Config
+			cfg.Subjects = s.subjects
+			if _, uerr := js.UpdateStream(&cfg); uerr != nil {
+				return fmt.Errorf("reconcile stream %s subjects: %w", s.name, uerr)
+			}
 		}
 	}
-	if !hasEvents {
-		return fmt.Errorf("overlap not caused by the legacy mailbox layout")
+	return nil
+}
+
+func sameSubjects(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	cfg := info.Config
-	cfg.Subjects = []string{inboxWildcard}
-	_, err = js.UpdateStream(&cfg)
-	return err
+	seen := map[string]bool{}
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		if !seen[s] {
+			return false
+		}
+	}
+	return true
 }
 
 // streamFor routes a subject to the stream that captures it (subjects are

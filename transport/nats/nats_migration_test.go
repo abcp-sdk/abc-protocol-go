@@ -21,6 +21,8 @@ func TestSelfMigration(t *testing.T) {
 	if os.Getenv("ABC_NATS_URL") != "" {
 		t.Skip("mutates broker stream layout; local ephemeral brokers only")
 	}
+	reconcile := true
+	_ = reconcile
 	srv, err := natsrun.Start(natsrun.Config{Storage: natsrun.Memory})
 	if err != nil {
 		t.Skipf("no nats-server: %v", err)
@@ -68,4 +70,52 @@ func TestSelfMigration(t *testing.T) {
 		t.Fatal("no events replayed from the post-migration EVENTS stream")
 	}
 
+}
+
+// TestReconcileStreams pins the generalized stream manager: existing streams
+// with drifted subjects are repaired (not fatal), and the connect still
+// works end-to-end.
+func TestReconcileStreams(t *testing.T) {
+	if os.Getenv("ABC_NATS_URL") != "" {
+		t.Skip("mutates broker stream layout; local ephemeral brokers only")
+	}
+	srv, err := natsrun.Start(natsrun.Config{Storage: natsrun.Memory})
+	if err != nil {
+		t.Skipf("no nats-server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	// Start from a drifted layout: events wildcard ALSO on the mailbox
+	// stream (legacy), plus a stray subject on EVENTS.
+	nc0, err := natsGo.Connect(srv.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc0.Close()
+	js0, _ := nc0.JetStream()
+	_ = js0.DeleteStream("ABC_MAILBOX")
+	_ = js0.DeleteStream("ABC_EVENTS")
+	_ = js0.DeleteStream("ABC_DLQ")
+	if _, err := js0.AddStream(&natsGo.StreamConfig{
+		Name:     "ABC_MAILBOX",
+		Subjects: []string{"abc.mailbox.>", "abc.session.events.>"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	bus, err := Connect(srv.URL())
+	if err != nil {
+		t.Fatalf("connect did not reconcile: %v", err)
+	}
+	defer bus.Close()
+
+	// Post-reconcile, the events stream holds exactly the events subject.
+	si, _ := bus.js.StreamInfo("ABC_EVENTS")
+	if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != "abc.session.events.>" {
+		t.Fatalf("ABC_EVENTS subjects = %v", si.Config.Subjects)
+	}
+	mi, _ := bus.js.StreamInfo("ABC_MAILBOX")
+	if len(mi.Config.Subjects) != 1 || mi.Config.Subjects[0] != "abc.mailbox.>" {
+		t.Fatalf("ABC_MAILBOX subjects = %v", mi.Config.Subjects)
+	}
 }

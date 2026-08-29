@@ -46,6 +46,21 @@ func New(b bus.Bus) *Agent {
 func (a *Agent) Bus() bus.Bus { return a.b }
 
 // Discover collects every reachable extension manifest.
+// ExtSupports reports whether a discovered extension advertises a protocol
+// feature (absent = pre-0.3 baseline). Call Discover first.
+func (a *Agent) ExtSupports(extID, feature string) bool {
+	m := a.manifest(extID)
+	if m == nil || m.Features == nil {
+		return false
+	}
+	for _, f := range *m.Features {
+		if f == feature {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Agent) Discover(ctx context.Context, maxWaitMs int) ([]abcprotocol.ExtensionManifest, error) {
 	// Presence-first: extensions heartbeat their manifests into the
 	// abc-presence KV bucket; the watcher keeps the cache live (offline
