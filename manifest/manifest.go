@@ -45,8 +45,10 @@ type ManifestConfig struct {
 }
 
 type ManifestHooks struct {
-	Call  []string `yaml:"call"`
-	Event []string `yaml:"event"`
+	Call         []string                  `yaml:"call"`
+	Event        []string                  `yaml:"event"`
+	CallSchemas  map[string]map[string]any `yaml:"call_schemas"`
+	EventSchemas map[string]map[string]any `yaml:"event_schemas"`
 }
 
 // LoadManifest reads and parses a YAML manifest file.
@@ -120,8 +122,6 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 		Tools:          tools,
 		Variables:      vars,
 		Config:         map[string]extension.ConfigSpec{},
-		CallHooks:      nil,
-		EventHooks:     nil,
 		Lifecycle:      m.Lifecycle,
 		OnCallHook:     b.OnCallHook,
 		OnEventHook:    b.OnEventHook,
@@ -140,6 +140,12 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 	if m.Hooks != nil {
 		cfg.CallHooks = m.Hooks.Call
 		cfg.EventHooks = m.Hooks.Event
+		if m.Hooks.CallSchemas != nil {
+			cfg.HookSchemas.Call = m.Hooks.CallSchemas
+		}
+		if m.Hooks.EventSchemas != nil {
+			cfg.HookSchemas.Event = m.Hooks.EventSchemas
+		}
 	}
 	return cfg
 }

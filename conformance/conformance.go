@@ -203,6 +203,7 @@ func Run(t *testing.T, newPair Factory) {
 	t.Run("kv_watch", func(t *testing.T) { testKVWatch(t, newPair) })
 	t.Run("config_recovers_from_kv", func(t *testing.T) { testConfigKVRecovery(t, newPair) })
 	t.Run("presence_liveness", func(t *testing.T) { testPresence(t, newPair) })
+	t.Run("hook_schema_validation", func(t *testing.T) { testHookSchema(t, newPair) })
 	t.Run("config_dot_session_key", func(t *testing.T) { testConfigDotSession(t, newPair) })
 	t.Run("poison_message_escalates_to_dlq", func(t *testing.T) { testPoisonEscalation(t, newPair) })
 	t.Run("requeue_dlq", func(t *testing.T) { testRequeueDLQ(t, newPair) })
@@ -242,7 +243,7 @@ func testToolContent(t *testing.T, newPair Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Content == nil || *tr.Content != "echo:hi" {
+	if tr.Content != "echo:hi" {
 		t.Fatalf("content = %+v", tr)
 	}
 }
@@ -320,7 +321,7 @@ func testCallID(t *testing.T, newPair Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Content == nil || *tr.Content != "echo:1" {
+	if tr.Content != "echo:1" {
 		t.Fatalf("result = %+v", tr)
 	}
 }
@@ -336,7 +337,7 @@ func testSessionName(t *testing.T, newPair Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Content == nil || *tr.Content != "session=sess-42" {
+	if tr.Content != "session=sess-42" {
 		t.Fatalf("session did not propagate: %+v", tr)
 	}
 }
@@ -1061,7 +1062,7 @@ func testSlowTool(t *testing.T, newPair Factory) {
 	if err != nil {
 		t.Fatalf("slow tool: %v", err)
 	}
-	if tr.Content == nil || *tr.Content != "woke" {
+	if tr.Content != "woke" {
 		t.Fatalf("slow tool content = %+v", tr.Content)
 	}
 }
@@ -1556,5 +1557,69 @@ func testRequeueDLQ(t *testing.T, newPair Factory) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("requeued message never consumed")
+	}
+}
+
+// testHookSchema pins the declarative hook payload schemas: an
+// out-of-contract call hook argument is rejected in-band; an out-of-contract
+// event hook payload is dropped (best-effort).
+func testHookSchema(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	badCall := make(chan abcprotocol.HookResponse, 1)
+	badEvent := make(chan string, 1)
+	ext := extension.New(extBus, extension.Config{
+		ID: "conf-ext", Version: "1.0",
+		CallHooks:  []string{"audit"},
+		EventHooks: []string{"notice"},
+		HookSchemas: extension.HookSchemas{
+			Call:  map[string]map[string]any{"audit": {"type": "object", "required": []any{"who"}, "properties": map[string]any{"who": map[string]any{"type": "string"}}}},
+			Event: map[string]map[string]any{"notice": {"type": "object", "required": []any{"kind"}, "properties": map[string]any{"kind": map[string]any{"type": "string"}}}},
+		},
+		OnCallHook: func(ctx context.Context, hook, session string, args map[string]any) (abcprotocol.HookResponse, error) {
+			badCall <- abcprotocol.HookResponse{Ok: true} // would only reach here with valid args
+			return abcprotocol.HookResponse{Ok: true}, nil
+		},
+		OnEventHook: func(ctx context.Context, hook, session string, payload any) error {
+			badEvent <- "delivered"
+			return nil
+		},
+	})
+	go func() { _ = ext.Serve(context.Background()) }()
+	time.Sleep(500 * time.Millisecond)
+	defer ext.Close()
+
+	a := agent.New(agentBus)
+	// bad call args: missing "who" -> in-band invalid_argument
+	r, err := a.CallHook(ctx, "conf-ext", "audit", "sess-h", map[string]any{"nope": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Ok || r.Error == nil || r.Error.Code != abcprotocol.HookResponseErrorCodeInvalidArgument {
+		t.Fatalf("bad call args: got ok=%v err=%+v", r.Ok, r.Error)
+	}
+	// bad event payload: missing "kind" -> dropped (no delivery)
+	if err := a.PublishEventHook(ctx, "notice", "sess-h", map[string]any{"unknown": 1}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-badEvent:
+		t.Fatal("invalid event payload was delivered")
+	case <-time.After(500 * time.Millisecond):
+	}
+	// valid payloads still flow
+	if err := a.PublishEventHook(ctx, "notice", "sess-h", map[string]any{"kind": "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-badEvent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("valid event payload not delivered")
+	}
+	select {
+	case <-badCall:
+	default:
 	}
 }

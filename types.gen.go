@@ -401,8 +401,10 @@ type ExtensionManifest struct {
 	} `json:"config,omitempty"`
 	Features *[]string `json:"features,omitempty"`
 	Hooks    *struct {
-		Call  *[]string `json:"call,omitempty"`
-		Event *[]string `json:"event,omitempty"`
+		Call         *[]string                          `json:"call,omitempty"`
+		CallSchemas  *map[string]map[string]interface{} `json:"call_schemas,omitempty"`
+		Event        *[]string                          `json:"event,omitempty"`
+		EventSchemas *map[string]map[string]interface{} `json:"event_schemas,omitempty"`
 	} `json:"hooks,omitempty"`
 	Id        string                        `json:"id"`
 	Lifecycle *[]ExtensionManifestLifecycle `json:"lifecycle,omitempty"`

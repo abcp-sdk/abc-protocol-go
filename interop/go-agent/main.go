@@ -54,7 +54,7 @@ func main() {
 		fmt.Println("[go-agent] echo failed:", err)
 		os.Exit(1)
 	}
-	expect(tr.Content != nil && *tr.Content == "ts-ext echo: hello-from-go", "tool echo content")
+	expect(tr.Content != "" && tr.Content == "ts-ext echo: hello-from-go", "tool echo content")
 
 	// 3. structured data
 	tr, err = a.CallTool(ctx, "sess-x", "ts-ext", "add", "c2", map[string]any{"a": 20.0, "b": 22.0})

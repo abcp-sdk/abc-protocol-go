@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -46,14 +47,17 @@ type VariableSpec struct {
 
 // Config describes an extension.
 type Config struct {
-	ID             string
-	Version        string
-	Tools          map[string]ToolSpec
-	Variables      map[string]VariableSpec
-	Config         map[string]ConfigSpec
-	CallHooks      []string
-	EventHooks     []string
-	Lifecycle      []string // created / forked / renamed / deleted
+	ID         string
+	Version    string
+	Tools      map[string]ToolSpec
+	Variables  map[string]VariableSpec
+	Config     map[string]ConfigSpec
+	CallHooks  []string
+	EventHooks []string
+	Lifecycle  []string // created / forked / renamed / deleted
+	// HookSchemas carries per-hook JSON schemas (call arguments / event
+	// payloads); dispatch validates against them (reject / drop on mismatch).
+	HookSchemas    HookSchemas
 	OnCallHook     OnCallHook
 	OnEventHook    OnEventHook
 	OnConfigChange OnConfigChangeFunc
@@ -62,6 +66,75 @@ type Config struct {
 	// session's in-flight calls. When nil, interrupts fall back to
 	// OnEventHook(ctx, "interrupt", ...).
 	OnInterrupt func(ctx context.Context, sessionName, reason string)
+}
+
+// HookSchemas maps hook name -> JSON schema (subset) for call arguments and
+// event payloads.
+type HookSchemas struct {
+	Call  map[string]map[string]any
+	Event map[string]map[string]any
+}
+
+// validateHookSchema implements the small declarative JSON-schema subset
+// hook authors need: type (scalar + object), required, properties[*].type,
+// and enum. Returns a message or "".
+func validateHookSchema(schema map[string]any, value any, path string) string {
+	if schema == nil {
+		return ""
+	}
+	t, _ := schema["type"].(string)
+	switch t {
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Sprintf("%s: expected string, got %T", path, value)
+		}
+	case "number":
+		if _, ok := value.(float64); !ok {
+			return fmt.Sprintf("%s: expected number, got %T", path, value)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Sprintf("%s: expected boolean, got %T", path, value)
+		}
+	case "object":
+		m, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Sprintf("%s: expected object, got %T", path, value)
+		}
+		if req, ok := schema["required"].([]any); ok {
+			for _, r := range req {
+				if name, ok := r.(string); ok {
+					if _, present := m[name]; !present {
+						return fmt.Sprintf("%s: missing required field %q", path, name)
+					}
+				}
+			}
+		}
+		if props, ok := schema["properties"].(map[string]any); ok {
+			for name, p := range props {
+				if v, present := m[name]; present {
+					if sub, ok := p.(map[string]any); ok {
+						if msg := validateHookSchema(sub, v, path+"."+name); msg != "" {
+							return msg
+						}
+					}
+				}
+			}
+		}
+	}
+	if enum, ok := schema["enum"].([]any); ok {
+		hit := false
+		for _, e := range enum {
+			if fmt.Sprintf("%v", e) == fmt.Sprintf("%v", value) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return fmt.Sprintf("%s: value not in the declared enum", path)
+		}
+	}
+	return ""
 }
 
 // OnLifecycleFunc receives session lifecycle events. Returning an error is
@@ -163,18 +236,27 @@ func New(b bus.Bus, cfg Config) *Extension {
 		}
 		e.manifest.Lifecycle = &kinds
 	}
-	if len(cfg.CallHooks) > 0 || len(cfg.EventHooks) > 0 {
+	if len(cfg.CallHooks) > 0 || len(cfg.EventHooks) > 0 || len(cfg.HookSchemas.Call) > 0 || len(cfg.HookSchemas.Event) > 0 {
 		var call, event *[]string
+		var callSchemas, eventSchemas *map[string]map[string]any
 		if len(cfg.CallHooks) > 0 {
 			call = &cfg.CallHooks
 		}
 		if len(cfg.EventHooks) > 0 {
 			event = &cfg.EventHooks
 		}
+		if len(cfg.HookSchemas.Call) > 0 {
+			callSchemas = &cfg.HookSchemas.Call
+		}
+		if len(cfg.HookSchemas.Event) > 0 {
+			eventSchemas = &cfg.HookSchemas.Event
+		}
 		e.manifest.Hooks = &struct {
-			Call  *[]string `json:"call,omitempty"`
-			Event *[]string `json:"event,omitempty"`
-		}{Call: call, Event: event}
+			Call         *[]string                          `json:"call,omitempty"`
+			CallSchemas  *map[string]map[string]interface{} `json:"call_schemas,omitempty"`
+			Event        *[]string                          `json:"event,omitempty"`
+			EventSchemas *map[string]map[string]interface{} `json:"event_schemas,omitempty"`
+		}{Call: call, Event: event, CallSchemas: callSchemas, EventSchemas: eventSchemas}
 	}
 	return e
 }
@@ -428,16 +510,21 @@ func (e *Extension) serveCallHooks(ctx context.Context) error {
 					sessionName = deref(env.SessionName)
 				}
 				var res abcprotocol.HookResponse
-				if e.cfg.OnCallHook == nil {
+				var args map[string]any
+				if call.Arguments != nil {
+					args = *call.Arguments
+				}
+				if msg := validateHookSchema(e.cfg.HookSchemas.Call[hook], args, "arguments"); msg != "" {
+					res = abcprotocol.HookResponse{Ok: false, Error: &struct {
+						Code    abcprotocol.HookResponseErrorCode `json:"code"`
+						Message string                            `json:"message"`
+					}{Code: abcprotocol.HookResponseErrorCodeInvalidArgument, Message: msg}}
+				} else if e.cfg.OnCallHook == nil {
 					res = abcprotocol.HookResponse{Ok: false, Error: &struct {
 						Code    abcprotocol.HookResponseErrorCode `json:"code"`
 						Message string                            `json:"message"`
 					}{Code: abcprotocol.HookResponseErrorCodeNotFound, Message: "no handler for hook " + hook}}
 				} else {
-					var args map[string]any
-					if call.Arguments != nil {
-						args = *call.Arguments
-					}
 					r, err := e.cfg.OnCallHook(ctx, hook, sessionName, args)
 					if err != nil {
 						res = abcprotocol.HookResponse{Ok: false, Error: &struct {
@@ -474,6 +561,9 @@ func (e *Extension) serveEventHooks(ctx context.Context) error {
 				sessionName := ev.SessionName
 				if sessionName == "" {
 					sessionName = deref(env.SessionName)
+				}
+				if msg := validateHookSchema(e.cfg.HookSchemas.Event[hook], ev.Payload, "payload"); msg != "" {
+					continue // invalid event payload: drop (best-effort)
 				}
 				if e.cfg.OnEventHook != nil {
 					_ = e.cfg.OnEventHook(ctx, hook, sessionName, ev.Payload)

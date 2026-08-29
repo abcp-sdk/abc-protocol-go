@@ -61,7 +61,7 @@ func TestEchoFlowOverNats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tr.Content == nil || *tr.Content != "echo: hi" {
+	if tr.Content != "echo: hi" {
 		t.Fatalf("result = %+v", tr)
 	}
 }

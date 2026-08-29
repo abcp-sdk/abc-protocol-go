@@ -14,12 +14,17 @@ import (
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
 )
 
-// ToolResult is a resolved tool result (wire type + convenience).
+// ToolResult is a resolved tool result. Content is the natural-language
+// text ("" when absent — mirroring the TS side, where content is optional
+// rather than nullable); Data is the structured result; Object/Error match
+// the wire offload / in-band error shapes; Metadata is the opaque custom
+// JSON the tool may attach (carried through verbatim).
 type ToolResult struct {
-	Content *string
-	Data    any
-	Object  *abcprotocol.ObjectRef
-	Error   *abcprotocol.ErrorPayload
+	Content  string
+	Data     any
+	Object   *abcprotocol.ObjectRef
+	Error    *abcprotocol.ErrorPayload
+	Metadata any
 }
 
 // MailboxMessageResolved is a delivered mailbox message.
@@ -142,7 +147,10 @@ func (a *Agent) CallTool(ctx context.Context, sessionName, extID, tool, callID s
 	if !protocol.Coerce(reply.Payload, &tr) {
 		return ToolResult{}, fmt.Errorf("tool %q: invalid result", tool)
 	}
-	r := ToolResult{Content: tr.Content, Data: tr.Data}
+	r := ToolResult{Data: tr.Data, Metadata: tr.Metadata}
+	if tr.Content != nil {
+		r.Content = *tr.Content
+	}
 	if tr.Error != nil {
 		r.Error = &abcprotocol.ErrorPayload{Code: abcprotocol.ErrorPayloadCode(tr.Error.Code), Message: tr.Error.Message}
 	}
