@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,8 +69,25 @@ func Connect(url string) (*Bus, error) {
 			MaxAge:   24 * time.Hour,
 		})
 		if err != nil {
-			nc.Close()
-			return nil, err
+			// SELF-MIGRATION (0.1 -> 0.2): a pre-0.2 ABC_MAILBOX still
+			// declares abc.session.events.>, which overlaps. Narrow the
+			// legacy stream to its mailbox subjects (mailbox messages are
+			// preserved; historical events stay in the old stream, outside
+			// the new replay window) and retry. The fleet must never crash
+			// on the 0.2 layout migration.
+			if strings.Contains(err.Error(), "subjects overlap") {
+				if migErr := migrateLegacyMailbox(js); migErr == nil {
+					_, err = js.AddStream(&nats.StreamConfig{
+						Name:     streamEvents,
+						Subjects: []string{eventsWildcard},
+						MaxAge:   24 * time.Hour,
+					})
+				}
+			}
+			if err != nil {
+				nc.Close()
+				return nil, err
+			}
 		}
 	}
 	// Dead letters: term() copies the message here before terminating it,
@@ -86,6 +104,29 @@ func Connect(url string) (*Bus, error) {
 		}
 	}
 	return &Bus{nc: nc, js: js}, nil
+}
+
+// migrateLegacyMailbox narrows a pre-0.2 ABC_MAILBOX (which also captured
+// session events) to its mailbox-only subjects so ABC_EVENTS can be created.
+func migrateLegacyMailbox(js nats.JetStreamContext) error {
+	info, err := js.StreamInfo(streamMailbox)
+	if err != nil {
+		return err
+	}
+	hasEvents := false
+	for _, s := range info.Config.Subjects {
+		if s == eventsWildcard {
+			hasEvents = true
+			break
+		}
+	}
+	if !hasEvents {
+		return fmt.Errorf("overlap not caused by the legacy mailbox layout")
+	}
+	cfg := info.Config
+	cfg.Subjects = []string{inboxWildcard}
+	_, err = js.UpdateStream(&cfg)
+	return err
 }
 
 // streamFor routes a subject to the stream that captures it (subjects are

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
@@ -25,7 +26,10 @@ type ConfigSpec struct {
 type OnConfigChangeFunc func(ctx context.Context, name string, value any, sessionName string, get func(name, sessionName string) any) error
 
 // ConfigStore keeps applied values: global set + per-session overrides.
+// Mutated from TWO goroutines (live abc.config reqs and the cfg KV watch),
+// so every access goes through mu.
 type ConfigStore struct {
+	mu      sync.Mutex
 	global  map[string]any
 	session map[string]map[string]any
 }
@@ -36,6 +40,8 @@ func newConfigStore() *ConfigStore {
 
 // Get resolves session override > global set > declared default.
 func (s *ConfigStore) Get(specs map[string]ConfigSpec, name, sessionName string) any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if sessionName != "" {
 		if v, ok := s.session[sessionName][name]; ok {
 			return v
@@ -51,6 +57,8 @@ func (s *ConfigStore) Get(specs map[string]ConfigSpec, name, sessionName string)
 }
 
 func (e *Extension) applyConfigSet(set abcprotocol.ConfigSet) {
+	e.configStore.mu.Lock()
+	defer e.configStore.mu.Unlock()
 	if set.Scope == abcprotocol.ConfigSetScopeSession && set.SessionName != nil {
 		if e.configStore.session[*set.SessionName] == nil {
 			e.configStore.session[*set.SessionName] = map[string]any{}
@@ -62,6 +70,8 @@ func (e *Extension) applyConfigSet(set abcprotocol.ConfigSet) {
 }
 
 func (e *Extension) rollbackConfigSet(set abcprotocol.ConfigSet) {
+	e.configStore.mu.Lock()
+	defer e.configStore.mu.Unlock()
 	if set.Scope == abcprotocol.ConfigSetScopeSession && set.SessionName != nil {
 		delete(e.configStore.session[*set.SessionName], set.Name)
 		return
@@ -206,6 +216,8 @@ func (e *Extension) DeleteSessionVariables(ctx context.Context, sessionName stri
 // applyConfigKV applies a cfg-bucket watch entry into the local store. Key
 // layout: <extId>.<name> (global) or <extId>.<session>.<name> (session).
 func (e *Extension) applyConfigKV(ev bus.KvEvent) {
+	e.configStore.mu.Lock()
+	defer e.configStore.mu.Unlock()
 	rest := strings.TrimPrefix(ev.Key, e.cfg.ID+".")
 	parts := strings.Split(rest, ".")
 	if ev.Deleted {
