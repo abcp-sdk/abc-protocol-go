@@ -218,14 +218,23 @@ func (e *Extension) DeleteSessionVariables(ctx context.Context, sessionName stri
 func (e *Extension) applyConfigKV(ev bus.KvEvent) {
 	e.configStore.mu.Lock()
 	defer e.configStore.mu.Unlock()
+	// Layout: <extId>.<name> (global) or <extId>.<escapedSession>.<name>.
+	// The session segment is dot-escaped (v0.2.2+); legacy raw keys with
+	// colon-style session names parse identically (no dots to escape).
 	rest := strings.TrimPrefix(ev.Key, e.cfg.ID+".")
-	parts := strings.Split(rest, ".")
+	parts := strings.SplitN(rest, ".", 2)
+	if len(parts) == 2 && strings.Contains(parts[1], ".") {
+		// session-scoped: split the session segment off the remainder
+		sessAndName := strings.SplitN(parts[1], ".", 2)
+		parts = []string{parts[0], protocol.UnescapeKVSegment(sessAndName[0]), strings.Join(sessAndName[1:], ".")}
+	}
 	if ev.Deleted {
-		if len(parts) == 1 {
+		switch len(parts) {
+		case 1:
 			delete(e.configStore.global, parts[0])
-		} else if len(parts) == 2 {
-			if m := e.configStore.session[parts[0]]; m != nil {
-				delete(m, parts[1])
+		case 3:
+			if m := e.configStore.session[parts[1]]; m != nil {
+				delete(m, parts[2])
 			}
 		}
 		return
@@ -251,10 +260,11 @@ func (e *Extension) applyConfigKV(ev bus.KvEvent) {
 	if len(parts) == 1 {
 		e.configStore.global[parts[0]] = v
 	} else if len(parts) == 2 {
-		if e.configStore.session[parts[0]] == nil {
-			e.configStore.session[parts[0]] = map[string]any{}
+		sess := protocol.UnescapeKVSegment(parts[0])
+		if e.configStore.session[sess] == nil {
+			e.configStore.session[sess] = map[string]any{}
 		}
-		e.configStore.session[parts[0]][parts[1]] = v
+		e.configStore.session[sess][parts[1]] = v
 	}
 }
 

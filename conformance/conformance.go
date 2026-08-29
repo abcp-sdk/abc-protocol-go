@@ -203,6 +203,9 @@ func Run(t *testing.T, newPair Factory) {
 	t.Run("kv_watch", func(t *testing.T) { testKVWatch(t, newPair) })
 	t.Run("config_recovers_from_kv", func(t *testing.T) { testConfigKVRecovery(t, newPair) })
 	t.Run("presence_liveness", func(t *testing.T) { testPresence(t, newPair) })
+	t.Run("config_dot_session_key", func(t *testing.T) { testConfigDotSession(t, newPair) })
+	t.Run("poison_message_escalates_to_dlq", func(t *testing.T) { testPoisonEscalation(t, newPair) })
+	t.Run("requeue_dlq", func(t *testing.T) { testRequeueDLQ(t, newPair) })
 }
 
 func testDiscover(t *testing.T, newPair Factory) {
@@ -1149,21 +1152,24 @@ func testTermDLQ(t *testing.T, newPair Factory) {
 	ctx := context.Background()
 
 	sess := "sess-dlq"
-	_ = a.PublishMailbox(ctx, sess, "poison", map[string]any{"bad": true})
-	_ = a.PublishMailbox(ctx, sess, "healthy", map[string]any{"ok": true})
-	_ = a.PublishMailbox(ctx, sess, "discard", map[string]any{"gone": true})
+	tag := "poison-" + protocol.NewID()[:6]
+	_ = a.PublishMailbox(ctx, sess, tag, map[string]any{"bad": true})
+	_ = a.PublishMailbox(ctx, sess, "healthy-"+tag, map[string]any{"ok": true})
+	_ = a.PublishMailbox(ctx, sess, "discard-"+tag, map[string]any{"gone": true})
 
 	var once sync.Once
 	done := make(chan struct{})
 	stop, err := a.ConsumeMailbox(ctx, func(m agent.MailboxMessageResolved) error {
 		switch m.Type {
-		case "poison":
+		case tag:
 			return &agent.TermError{}
-		case "discard":
+		case "discard-" + tag:
 			return &agent.TermError{NoDLQ: true}
 		default:
-			// at-least-once: a redelivery is fine, ack it again
-			once.Do(func() { close(done) })
+			if m.Type == "healthy-"+tag {
+				// at-least-once: a redelivery is fine, ack it again
+				once.Do(func() { close(done) })
+			}
 			return nil
 		}
 	}, 100)
@@ -1177,38 +1183,40 @@ func testTermDLQ(t *testing.T, newPair Factory) {
 		t.Fatal("healthy message never consumed")
 	}
 
-	// The DLQ must hold exactly the poison message, in shape.
-	dlqDone := make(chan agent.MailboxMessageResolved, 4)
+	// The DLQ must hold our poison message (and NOT the discard). A shared
+	// broker may hold unrelated dead letters, so filter to our own tag.
+	dlqDone := make(chan agent.MailboxMessageResolved, 16)
 	dlqStop, err := a.ConsumeDLQ(ctx, func(m agent.MailboxMessageResolved) error {
-		dlqDone <- m
+		if m.Type == tag || m.Type == "discard-"+tag {
+			dlqDone <- m
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dlqStop()
+	var found, foundDiscard bool
 	deadline := time.After(10 * time.Second)
-	var seen []string
-	for len(seen) < 1 {
+	for !found || !foundDiscard {
 		select {
 		case m := <-dlqDone:
-			seen = append(seen, m.Type)
-		case <-deadline:
-		L:
-			for {
-				select {
-				case m := <-dlqDone:
-					seen = append(seen, m.Type)
-				default:
-					break L
-				}
+			if m.Type == tag {
+				found = true
 			}
+			if m.Type == "discard-"+tag {
+				foundDiscard = true
+			}
+		case <-deadline:
 			goto verdict
 		}
 	}
 verdict:
-	if len(seen) != 1 || seen[0] != "poison" {
-		t.Fatalf("DLQ contents = %v, want exactly [poison]", seen)
+	if !found {
+		t.Fatal("poison message never reached the DLQ")
+	}
+	if foundDiscard {
+		t.Fatal("TermNoDLQ message leaked into the DLQ")
 	}
 }
 
@@ -1298,10 +1306,19 @@ func testKVWatch(t *testing.T, newPair Factory) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no snapshot event")
 	}
+	// snapshot/initial boundary marker arrives next
+	select {
+	case ev := <-ch:
+		if !ev.Done {
+			t.Fatalf("expected Done boundary, got %+v", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no Done boundary event")
+	}
 	_ = agentBus.KVPut(ctx, "watch-test", "k.b", "2", 0)
 	select {
 	case ev := <-ch:
-		if ev.Key != "k.b" || ev.Value != "2" || !ev.IsUpdate {
+		if ev.Key != "k.b" || ev.Value != "2" || !ev.IsUpdate || ev.Done {
 			t.Fatalf("update event = %+v", ev)
 		}
 	case <-time.After(5 * time.Second):
@@ -1384,4 +1401,160 @@ func testPresence(t *testing.T, newPair Factory) {
 	// Close path is exercised by defer; the delete is best-effort and the
 	// TTL (15s) is the backstop, so we do not assert on disappearance
 	// timing here.
+}
+
+// testConfigDotSession pins the KV key escaping: a session name containing
+// dots must roundtrip through the cfg KV bucket (watch-side parsing must
+// not split on the dots inside the session segment).
+func testConfigDotSession(t *testing.T, newPair Factory) {
+	agentBus, extBus, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	a := agent.New(agentBus)
+	if err := a.ServeConfig(true); err != nil {
+		t.Fatal(err)
+	}
+	var m abcprotocol.ExtensionManifest
+	if err := json.Unmarshal([]byte(`{"id":"conf-ext","version":"1","config":[{"name":"dots","type":"string","scope":"session"}]}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	sess := "weird.session.name:main"
+	if err := a.SetConfig(ctx, "conf-ext", "dots", "escaped-ok", sess, &m, nil); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	ext := extension.New(extBus, extension.Config{
+		ID: "conf-ext", Version: "1.0",
+		Config: map[string]extension.ConfigSpec{"dots": {Type: "string", Scope: "session"}},
+	})
+	if err := ext.Serve(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer ext.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := ext.GetConfig("dots", sess); got == "escaped-ok" {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("dot-session config not recovered; got %v", ext.GetConfig("dots", sess))
+}
+
+// testPoisonEscalation pins the default-safety behavior: a handler that
+// keeps failing gets the message redelivered at most maxNaks times before
+// ConsumeMailbox terms it into the DLQ — no infinite nak loop.
+func testPoisonEscalation(t *testing.T, newPair Factory) {
+	agentBus, _, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+	a := agent.New(agentBus)
+	tag := "always-fails-" + protocol.NewID()[:6]
+	_ = a.PublishMailbox(ctx, "sess-poison", tag, map[string]any{"n": 1})
+
+	deliveries := 0
+	done := make(chan int, 1)
+	stop, err := a.ConsumeMailbox(ctx, func(m agent.MailboxMessageResolved) error {
+		deliveries++
+		if deliveries >= 3 {
+			done <- deliveries
+		}
+		return fmt.Errorf("boom %d", deliveries)
+	}, 50, 3) // maxNaks=3 for a fast test
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	select {
+	case n := <-done:
+		// it got delivered maxNaks times; give the DLQ copy a moment
+		time.Sleep(time.Second)
+		dlqSeen := make(chan agent.MailboxMessageResolved, 1)
+		dlqStop, err := a.ConsumeDLQ(ctx, func(m agent.MailboxMessageResolved) error {
+			if m.Type == tag {
+				dlqSeen <- m
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer dlqStop()
+		select {
+		case dm := <-dlqSeen:
+			if dm.Type != tag {
+				t.Fatalf("DLQ type = %q", dm.Type)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("poison message never landed in the DLQ")
+		}
+		_ = n
+	case <-time.After(20 * time.Second):
+		t.Fatal("message did not reach maxNaks deliveries")
+	}
+}
+
+// testRequeueDLQ pins the DLQ return path: term -> triage -> requeue ->
+// consumed successfully on the second life.
+func testRequeueDLQ(t *testing.T, newPair Factory) {
+	agentBus, _, cleanup := newPair(t)
+	defer cleanup()
+	ctx := context.Background()
+	a := agent.New(agentBus)
+
+	id := protocol.NewID()
+	if err := agentBus.InboxPublish(ctx, protocol.ChMailbox("sess-rq"), abcprotocol.MailboxMessage{Id: id, Type: "requeue-me", Payload: map[string]any{"k": 1}}, bus.InboxPublishOpts{ID: id, SessionName: "sess-rq"}); err != nil {
+		t.Fatal(err)
+	}
+
+	succeeded := make(chan agent.MailboxMessageResolved, 1)
+	firstLife := true // first delivery parks in the DLQ; the requeued copy succeeds
+	stop, err := a.ConsumeMailbox(ctx, func(m agent.MailboxMessageResolved) error {
+		if m.Type == "requeue-me" && !firstLife {
+			succeeded <- m
+			return nil
+		}
+		if m.Type == "requeue-me" {
+			firstLife = false
+		}
+		return &agent.TermError{} // park it
+	}, 100, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	// wait for the dead letter, then requeue it
+	var dlqID string
+	deadline := time.Now().Add(10 * time.Second)
+	for dlqID == "" && time.Now().Before(deadline) {
+		dlqStop, err := a.ConsumeDLQ(ctx, func(m agent.MailboxMessageResolved) error {
+			if m.Type == "requeue-me" && dlqID == "" {
+				dlqID = m.ID
+			}
+			return fmt.Errorf("keep") // nak so it stays available to RequeueDLQ
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(500 * time.Millisecond)
+		dlqStop()
+	}
+	if dlqID == "" {
+		t.Fatal("message never reached the DLQ")
+	}
+	ok, err := a.RequeueDLQ(ctx, dlqID)
+	if err != nil || !ok {
+		t.Fatalf("RequeueDLQ: ok=%v err=%v", ok, err)
+	}
+	select {
+	case m := <-succeeded:
+		if m.Type != "requeue-me" {
+			t.Fatalf("requeued type = %q", m.Type)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("requeued message never consumed")
+	}
 }

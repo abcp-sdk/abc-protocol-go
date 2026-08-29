@@ -285,7 +285,7 @@ func (c *ConfigAuthority) fillSnapshot(extID string, snap *abcprotocol.ConfigSna
 
 func configKVKey(extID, scope, sessionName, name string) string {
 	if scope == "session" {
-		return extID + "." + sessionName + "." + name
+		return extID + "." + protocol.EscapeKVSegment(sessionName) + "." + name
 	}
 	return extID + "." + name
 }

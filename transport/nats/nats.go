@@ -432,6 +432,11 @@ func (b *Bus) KvWatch(ctx context.Context, bucket, keys string) (<-chan bus.KvEv
 				}
 				if e == nil {
 					snapshotDone = true
+					select {
+					case ch <- bus.KvEvent{Done: true}:
+					case <-ctx.Done():
+						return
+					}
 					continue
 				}
 				ev := bus.KvEvent{

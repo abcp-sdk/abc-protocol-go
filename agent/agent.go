@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
@@ -248,6 +249,12 @@ func (a *Agent) PublishMailbox(ctx context.Context, sessionName, typ string, pay
 	return a.b.InboxPublish(ctx, protocol.ChMailbox(sessionName), abcprotocol.MailboxMessage{Id: id, Type: typ, Payload: payload}, bus.InboxPublishOpts{ID: id, SessionName: sessionName})
 }
 
+// DefaultMaxNaksBeforeTerm is the poison-message escalation threshold:
+// a handler that keeps failing gets the message redelivered this many
+// times; after that ConsumeMailbox terms it into the dead-letter stream
+// instead of nak-looping forever.
+const DefaultMaxNaksBeforeTerm = 5
+
 // TermError is returned by a mailbox handler to terminate a message:
 // delivery stops and (unless NoDLQ) the message is copied to the
 // dead-letter stream for triage.
@@ -260,10 +267,21 @@ func (e *TermError) Error() string { return "terminated by consumer" }
 // (redelivery after delayMs); *TermError terms (optionally without the
 // dead-letter copy); malformed messages are acked and skipped.
 // The returned cancel func closes the subscription.
-func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageResolved) error, nakDelayMs int) (func(), error) {
+func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageResolved) error, nakDelayMs int, maxNaks ...int) (func(), error) {
+	limit := DefaultMaxNaksBeforeTerm
+	if len(maxNaks) > 0 && maxNaks[0] > 0 {
+		limit = maxNaks[0]
+	}
 	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: protocol.MailboxWildcard + ">"})
 	if err != nil {
 		return nil, err
+	}
+	var nakMu sync.Mutex
+	nakCount := map[string]int{}
+	forget := func(id string) {
+		nakMu.Lock()
+		delete(nakCount, id)
+		nakMu.Unlock()
 	}
 	go func() {
 		for {
@@ -283,15 +301,27 @@ func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageR
 			}
 			switch err := handler(MailboxMessageResolved{ID: m.Id, SessionName: sessionName, Type: m.Type, Payload: m.Payload}); {
 			case err == nil:
+				forget(m.Id)
 				msg.Ack()
 			default:
 				var te *TermError
 				if errors.As(err, &te) {
+					forget(m.Id)
 					if te.NoDLQ {
 						msg.TermNoDLQ()
 					} else {
 						msg.Term()
 					}
+					break
+				}
+				nakMu.Lock()
+				nakCount[m.Id]++
+				n := nakCount[m.Id]
+				nakMu.Unlock()
+				if n >= limit {
+					// poison: stop the redelivery loop, park it in the DLQ
+					forget(m.Id)
+					msg.Term()
 					break
 				}
 				msg.Nak(nakDelayMs)
@@ -333,6 +363,50 @@ func (a *Agent) ConsumeDLQ(ctx context.Context, handler func(MailboxMessageResol
 		}
 	}()
 	return func() { _ = sub.Close() }, nil
+}
+
+// RequeueDLQ takes one dead-lettered message (by its original id) and
+// publishes it back onto the session's mailbox with a fresh id, acking the
+// dead-letter copy. This is the return path for triage: fix the consumer,
+// then requeue the parked payloads.
+func (a *Agent) RequeueDLQ(ctx context.Context, id string) (bool, error) {
+	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: "abc.dlq.>"})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = sub.Close() }()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			return false, nil
+		default:
+		}
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		msg, ok := sub.Next(cctx)
+		cancel()
+		if !ok {
+			continue
+		}
+		env := msg.Envelope
+		sessionName := ""
+		if env.SessionName != nil {
+			sessionName = *env.SessionName
+		}
+		var m abcprotocol.MailboxMessage
+		if sessionName == "" || !protocol.Coerce(env.Payload, &m) || m.Id != id {
+			// not ours: put it back in the DLQ after a short delay
+			msg.Nak(500)
+			continue
+		}
+		newID := protocol.NewID()
+		if err := a.b.InboxPublish(ctx, protocol.ChMailbox(sessionName), abcprotocol.MailboxMessage{Id: newID, Type: m.Type, Payload: m.Payload}, bus.InboxPublishOpts{ID: newID, SessionName: sessionName}); err != nil {
+			msg.Nak(500)
+			return false, err
+		}
+		msg.Ack()
+		return true, nil
+	}
 }
 
 // PutObject / GetObject proxy object store.

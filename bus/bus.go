@@ -47,6 +47,11 @@ type KvEvent struct {
 	Revision uint64
 	Deleted  bool
 	IsUpdate bool
+	// Done marks the snapshot/initial-state boundary: it is set on exactly
+	// one synthetic event (empty value) delivered after the retained
+	// snapshot; everything after is live. Best-effort on some clients
+	// (may arrive together with the last snapshot entry).
+	Done bool
 }
 
 // InboxMsg is a durable-inbox message with explicit ack/nak/term.

@@ -116,3 +116,55 @@ func Coerce(src any, dst any) bool {
 // Ptr returns a pointer to v. Useful for optional (pointer) fields in
 // generated types: Envelope{V: protocol.Ptr(1)}.
 func Ptr[T any](v T) *T { return &v }
+
+// EscapeKVSegment encodes a string into a NATS KV-safe key segment using
+// only [a-zA-Z0-9-/_=] (NATS KV key alphabet — '%' and ':' are invalid).
+// The escape char '=' introduces a two-hex-digit byte ('.' -> "=2E",
+// '=' -> "=3D"); every other byte outside the safe set is hex-encoded.
+// Round-trips via UnescapeKVSegment and never produces the '.' separator.
+func EscapeKVSegment(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-' || c == '_' || c == '/':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('=')
+			const hex = "0123456789ABCDEF"
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0xf])
+		}
+	}
+	return b.String()
+}
+
+// UnescapeKVSegment reverses EscapeKVSegment.
+func UnescapeKVSegment(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '=' && i+2 < len(s) {
+			if hi, ok1 := hexVal(s[i+1]); ok1 {
+				if lo, ok2 := hexVal(s[i+2]); ok2 {
+					b.WriteByte(hi<<4 | lo)
+					i += 2
+					continue
+				}
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func hexVal(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	}
+	return 0, false
+}

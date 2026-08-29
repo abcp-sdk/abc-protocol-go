@@ -19,27 +19,36 @@ import (
 // When ABC_NATS_URL is set the suite instead runs against that external
 // broker (shared), which is the opt-in mode for live-cluster checks.
 func TestConformance(t *testing.T) {
+	// One ephemeral broker PER SUBTEST: durable/queue consumers leak state
+	// across subtests on a shared broker during async teardown, stealing
+	// each other's deliveries (poison/DLQ/config recovery cases especially).
+	// ABC_NATS_URL opts into a shared external broker for live checks.
 	extURL := os.Getenv("ABC_NATS_URL")
-	if extURL == "" {
-		s, err := natsrun.Start(natsrun.Config{Storage: natsrun.Memory})
-		if err != nil {
-			t.Skip("no nats-server available (install nats-server or set ABC_NATS_SERVER_BIN or ABC_NATS_URL)")
-		}
-		t.Cleanup(func() { _ = s.Stop() })
-		extURL = s.URL()
-	}
 	Run(t, func(t *testing.T) (bus.Bus, bus.Bus, func()) {
-		a, err := nats.Connect(extURL)
+		var stopServer func()
+		url := extURL
+		if url == "" {
+			s, err := natsrun.Start(natsrun.Config{Storage: natsrun.Memory})
+			if err != nil {
+				t.Skip("no nats-server available (install nats-server or set ABC_NATS_SERVER_BIN or ABC_NATS_URL)")
+			}
+			url = s.URL()
+			stopServer = func() { _ = s.Stop() }
+		}
+		a, err := nats.Connect(url)
 		if err != nil {
 			t.Fatal(err)
 		}
-		e, err := nats.Connect(extURL)
+		e, err := nats.Connect(url)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return a, e, func() {
 			_ = a.Close()
 			_ = e.Close()
+			if stopServer != nil {
+				stopServer()
+			}
 		}
 	})
 }
