@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
+	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/identity"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
 	"github.com/nats-io/nats.go"
 )
@@ -27,8 +29,9 @@ const (
 
 // Bus is the NATS transport adapter.
 type Bus struct {
-	nc *nats.Conn
-	js nats.JetStreamContext
+	nc  *nats.Conn
+	js  nats.JetStreamContext
+	idn *identity.Identity
 }
 
 var _ bus.Bus = (*Bus)(nil)
@@ -40,6 +43,10 @@ type Options struct {
 	// Replicas sets the JetStream replica count at stream creation.
 	// Zero means the server default (1). Cannot change after creation.
 	Replicas int
+	// Identity enables opt-in message authentication: outgoing messages
+	// carry abc-id/abc-sig NATS headers (HMAC), incoming messages are
+	// verified. Nil (default) = zero auth overhead, everything passes.
+	Identity *identity.Identity
 }
 
 // Connect establishes a NATS connection with the default stream topology.
@@ -72,7 +79,7 @@ func ConnectWithOptions(url string, opts Options) (*Bus, error) {
 		nc.Close()
 		return nil, err
 	}
-	return &Bus{nc: nc, js: js}, nil
+	return &Bus{nc: nc, js: js, idn: opts.Identity}, nil
 }
 
 // ensureStreams reconciles the mailbox/events/dlq streams. Order matters:
@@ -115,6 +122,38 @@ func ensureStreams(js nats.JetStreamContext, opts Options) error {
 	return nil
 }
 
+// signMsg attaches the identity HMAC to a NATS message's headers (opt-in;
+// nil identity = no-op).
+func (b *Bus) signMsg(msg *nats.Msg, ch, kind, id string, payload any) {
+	if b.idn == nil {
+		return
+	}
+	h := identity.AuthHeader(*b.idn, identity.Fields{Ch: ch, Kind: kind, ID: id, Payload: payload})
+	if msg.Header == nil {
+		msg.Header = nats.Header{}
+	}
+	msg.Header.Set("abc-id", h.ID)
+	msg.Header.Set("abc-sig", h.Sig)
+}
+
+// verifyMsg checks abc-id/abc-sig headers (opt-in; nil identity = always
+// true). Returns false for missing/invalid signatures.
+func (b *Bus) verifyMsg(m *nats.Msg, raw *rawEnvelope) bool {
+	if b.idn == nil {
+		return true
+	}
+	sig := m.Header.Get("abc-sig")
+	if sig == "" {
+		return false
+	}
+	id := ""
+	if raw.ID != nil {
+		id = *raw.ID
+	}
+	return identity.Verify(m.Header.Get("abc-id"), b.idn.Secret,
+		identity.Fields{Ch: m.Subject, Kind: raw.Kind, ID: id, Payload: json.RawMessage(raw.Payload)}, sig)
+}
+
 func sameSubjects(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -155,10 +194,51 @@ func dlqSubjectFor(subject string) string {
 
 func encode(payload any) ([]byte, error) { return json.Marshal(payload) }
 
+// buildEnvelope assembles the wire envelope in one place. The optional
+// fields ride only when set, mirroring the zod optional() semantics.
+func buildEnvelope(kind, ch string, payload any, id, sessionName, replyTo string) ([]byte, error) {
+	m := map[string]any{"v": 1, "ch": ch, "kind": kind, "payload": payload}
+	if id != "" {
+		m["id"] = id
+	}
+	if sessionName != "" {
+		m["session_name"] = sessionName
+	}
+	if replyTo != "" {
+		m["reply_to"] = replyTo
+	}
+	return json.Marshal(m)
+}
+
+// rawEnvelope mirrors the wire shape but keeps payload as raw bytes, so
+// downstream Coerce calls skip a full Marshal round trip (the hot path:
+// every tool call / hook / config delivery).
+type rawEnvelope struct {
+	V           int             `json:"v"`
+	Ch          string          `json:"ch"`
+	Kind        string          `json:"kind"`
+	ID          *string         `json:"id,omitempty"`
+	SessionName *string         `json:"session_name,omitempty"`
+	ReplyTo     *string         `json:"reply_to,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+}
+
 func decode(m *nats.Msg) (abcprotocol.Envelope, error) {
-	var env abcprotocol.Envelope
-	if err := json.Unmarshal(m.Data, &env); err != nil {
-		return env, err
+	var raw rawEnvelope
+	if err := json.Unmarshal(m.Data, &raw); err != nil {
+		return abcprotocol.Envelope{}, err
+	}
+	if raw.V != 1 {
+		log.Printf("[abc] envelope version %d on %s (this build speaks v1); fields may be misinterpreted", raw.V, raw.Ch)
+	}
+	v := raw.V
+	env := abcprotocol.Envelope{
+		V:           &v,
+		Ch:          raw.Ch,
+		Kind:        abcprotocol.EnvelopeKind(raw.Kind),
+		Id:          raw.ID,
+		SessionName: raw.SessionName,
+		Payload:     raw.Payload,
 	}
 	if m.Reply != "" {
 		env.ReplyTo = &m.Reply
@@ -167,15 +247,9 @@ func decode(m *nats.Msg) (abcprotocol.Envelope, error) {
 }
 
 func (b *Bus) Request(ctx context.Context, ch string, payload any, opts bus.RequestOpts) (abcprotocol.Envelope, error) {
-	data, err := encode(map[string]any{"v": 1, "ch": ch, "kind": "req", "payload": payload})
+	data, err := buildEnvelope("req", ch, payload, "", opts.SessionName, "")
 	if err != nil {
 		return abcprotocol.Envelope{}, err
-	}
-	if opts.SessionName != "" {
-		data, err = encode(map[string]any{"v": 1, "ch": ch, "kind": "req", "session_name": opts.SessionName, "payload": payload})
-		if err != nil {
-			return abcprotocol.Envelope{}, err
-		}
 	}
 	// TimeoutMs > 0 bounds the request; 0 means no timeout (ctx only).
 	var cancel context.CancelFunc
@@ -183,15 +257,32 @@ func (b *Bus) Request(ctx context.Context, ch string, payload any, opts bus.Requ
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutMs)*time.Millisecond)
 		defer cancel()
 	}
-	m, err := b.nc.RequestWithContext(ctx, ch, data)
-	if err != nil {
-		return abcprotocol.Envelope{}, err
+	var m *nats.Msg
+	if b.idn != nil {
+		rm := nats.NewMsg(ch)
+		rm.Data = data
+		b.signMsg(rm, ch, "req", "", payload)
+		m, err = b.nc.RequestMsgWithContext(ctx, rm)
+		if err != nil {
+			return abcprotocol.Envelope{}, err
+		}
+	} else {
+		m, err = b.nc.RequestWithContext(ctx, ch, data)
+		if err != nil {
+			return abcprotocol.Envelope{}, err
+		}
+	}
+	if b.idn != nil {
+		var raw rawEnvelope
+		if json.Unmarshal(m.Data, &raw) == nil && !b.verifyMsg(m, &raw) {
+			return abcprotocol.Envelope{}, fmt.Errorf("identity: signature verification failed on %s", m.Subject)
+		}
 	}
 	return decode(m)
 }
 
 func (b *Bus) RequestMany(ctx context.Context, ch string, payload any, opts bus.RequestOpts) ([]abcprotocol.Envelope, error) {
-	data, err := encode(map[string]any{"v": 1, "ch": ch, "kind": "req", "payload": payload})
+	data, err := buildEnvelope("req", ch, payload, "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -228,15 +319,13 @@ func (b *Bus) RequestMany(ctx context.Context, ch string, payload any, opts bus.
 }
 
 func (b *Bus) Publish(ctx context.Context, ch string, payload any, replyTo string) error {
-	data, err := encode(map[string]any{"v": 1, "ch": ch, "kind": "pub", "payload": payload})
+	data, err := buildEnvelope("pub", ch, payload, "", "", replyTo)
 	if err != nil {
 		return err
 	}
 	msg := nats.NewMsg(ch)
 	msg.Data = data
-	if replyTo != "" {
-		msg.Reply = replyTo
-	}
+	b.signMsg(msg, ch, "pub", "", payload)
 	return b.nc.PublishMsg(msg)
 }
 
@@ -258,17 +347,24 @@ func (b *Bus) Subscribe(ctx context.Context, ch string, opts bus.SubscribeOpts) 
 		_ = sub.Unsubscribe()
 		return nil, err
 	}
-	return &natsSub{sub: sub}, nil
+	return &natsSub{sub: sub, bus: b}, nil
 }
 
 type natsSub struct {
 	sub *nats.Subscription
+	bus *Bus
 }
 
 func (s *natsSub) Next(ctx context.Context) (abcprotocol.Envelope, bool) {
 	m, err := s.sub.NextMsgWithContext(ctx)
 	if err != nil {
 		return abcprotocol.Envelope{}, false
+	}
+	if s.bus.idn != nil {
+		var raw rawEnvelope
+		if json.Unmarshal(m.Data, &raw) == nil && !s.bus.verifyMsg(m, &raw) {
+			return abcprotocol.Envelope{}, false // bad/missing signature: drop
+		}
 	}
 	env, err := decode(m)
 	if err != nil {
@@ -280,15 +376,9 @@ func (s *natsSub) Next(ctx context.Context) (abcprotocol.Envelope, bool) {
 func (s *natsSub) Close() error { return s.sub.Unsubscribe() }
 
 func (b *Bus) InboxPublish(ctx context.Context, ch string, payload any, opts bus.InboxPublishOpts) error {
-	data, err := encode(map[string]any{"v": 1, "ch": ch, "kind": "queue", "id": opts.ID, "payload": payload})
+	data, err := buildEnvelope("queue", ch, payload, opts.ID, opts.SessionName, "")
 	if err != nil {
 		return err
-	}
-	if opts.SessionName != "" {
-		data, err = encode(map[string]any{"v": 1, "ch": ch, "kind": "queue", "id": opts.ID, "session_name": opts.SessionName, "payload": payload})
-		if err != nil {
-			return err
-		}
 	}
 	_, err = b.js.Publish(ch, data, nats.MsgId(opts.ID))
 	return err

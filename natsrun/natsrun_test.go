@@ -7,6 +7,7 @@ import (
 
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/agent"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
+	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
 	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/transport/nats"
 )
 
@@ -46,7 +47,8 @@ func TestStartStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reply.Payload != "pong" {
+	var pong string
+	if !protocol.Coerce(reply.Payload, &pong) || pong != "pong" {
 		t.Fatalf("reply = %+v", reply)
 	}
 }

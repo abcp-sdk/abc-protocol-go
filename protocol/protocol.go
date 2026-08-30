@@ -105,12 +105,22 @@ func NewID() string {
 }
 
 // Coerce round-trips an arbitrary decoded value into a typed shape via JSON.
+// Coerce converts a decoded payload into a typed value. When src is raw
+// JSON bytes (the transport decode path keeps payloads as json.RawMessage),
+// it unmarshals directly — skipping a full Marshal round trip.
 func Coerce(src any, dst any) bool {
-	b, err := json.Marshal(src)
-	if err != nil {
-		return false
+	switch v := src.(type) {
+	case json.RawMessage:
+		return json.Unmarshal(v, dst) == nil
+	case []byte:
+		return json.Unmarshal(v, dst) == nil
+	default:
+		b, err := json.Marshal(src)
+		if err != nil {
+			return false
+		}
+		return json.Unmarshal(b, dst) == nil
 	}
-	return json.Unmarshal(b, dst) == nil
 }
 
 // Ptr returns a pointer to v. Useful for optional (pointer) fields in
