@@ -223,6 +223,21 @@ func (e *Extension) DeleteSessionVariables(ctx context.Context, sessionName stri
 	return nil
 }
 
+// GetSessionVariable reads a session variable by provider (e.g. "agent" for
+// vars.agent.locale), falling back to the given default when absent. The
+// provider id is explicit so an extension can read another extension's (or the
+// agent's) projected KV value for a session.
+func (e *Extension) GetSessionVariable(ctx context.Context, provider, sessionName, name, fallback string) string {
+	if sessionName == "" {
+		return fallback
+	}
+	v, err := e.b.KVGet(ctx, protocol.VarsBucket, protocol.SessionVarKey(provider, sessionName, name))
+	if err != nil || v == "" {
+		return fallback
+	}
+	return v
+}
+
 // applyConfigKV applies a cfg-bucket watch entry into the local store. Key
 // layout: <extId>.<name> (global) or <extId>.<session>.<name> (session).
 func (e *Extension) applyConfigKV(ev bus.KvEvent) {
