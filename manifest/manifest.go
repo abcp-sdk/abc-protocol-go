@@ -102,13 +102,14 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 			continue
 		}
 		h.Description = t.Description
+		h.Descriptions = t.Descriptions
 		h.InputSchema = t.InputSchema
 		tools[t.Name] = h
 	}
 
 	vars := map[string]extension.VariableSpec{}
 	for _, v := range m.Variables {
-		spec := extension.VariableSpec{Description: v.Description, Scope: v.Scope}
+		spec := extension.VariableSpec{Description: v.Description, Descriptions: v.Descriptions, Scope: v.Scope}
 		if spec.Scope == "" {
 			spec.Scope = "global"
 		}
