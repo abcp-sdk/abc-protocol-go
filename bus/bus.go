@@ -124,6 +124,11 @@ type Bus interface {
 	ObjectPut(ctx context.Context, name string, data []byte) error
 	ObjectGet(ctx context.Context, name string) ([]byte, error)
 
+	// ObjectPutPersistent stores bytes in the durable (no-TTL) object bucket.
+	// Tool payloads use ObjectPut (transient); durable file bytes use this.
+	ObjectPutPersistent(ctx context.Context, name string, data []byte) error
+	ObjectGetPersistent(ctx context.Context, name string) ([]byte, error)
+
 	// KvWatch streams bucket entries matching keys (NATS wildcard). The
 	// initial snapshot arrives first, then live updates.
 	KvWatch(ctx context.Context, bucket, keys string) (<-chan KvEvent, func(), error)

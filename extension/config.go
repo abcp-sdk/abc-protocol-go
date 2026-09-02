@@ -187,6 +187,16 @@ func (e *Extension) GetObject(ctx context.Context, name string) ([]byte, error) 
 	return e.b.ObjectGet(ctx, name)
 }
 
+// PutObjectPersistent stores bytes in the durable (no-TTL) object bucket.
+func (e *Extension) PutObjectPersistent(ctx context.Context, name string, data []byte) error {
+	return e.b.ObjectPutPersistent(ctx, name, data)
+}
+
+// GetObjectPersistent fetches bytes from the durable (no-TTL) object bucket.
+func (e *Extension) GetObjectPersistent(ctx context.Context, name string) ([]byte, error) {
+	return e.b.ObjectGetPersistent(ctx, name)
+}
+
 // SetVariable stores a global variable (vars.<extId>.<name>).
 func (e *Extension) SetVariable(ctx context.Context, name, value string) error {
 	return e.b.KVPut(ctx, protocol.VarsBucket, protocol.VarKey(e.cfg.ID, name), value, 0)

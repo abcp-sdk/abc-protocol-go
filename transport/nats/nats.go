@@ -25,6 +25,7 @@ const (
 	durableConsumer = "abc-mailbox-push"
 	queueGroup      = "abc-mailbox"
 	objectBucket    = "ABC_TOOL"
+	objectBucketDur = "ABC_FILES"
 )
 
 // Bus is the NATS transport adapter.
@@ -459,6 +460,26 @@ func (b *Bus) ObjectPut(ctx context.Context, name string, data []byte) error {
 
 func (b *Bus) ObjectGet(ctx context.Context, name string) ([]byte, error) {
 	os, err := b.js.ObjectStore(objectBucket)
+	if err != nil {
+		return nil, nil
+	}
+	return os.GetBytes(name)
+}
+
+func (b *Bus) ObjectPutPersistent(ctx context.Context, name string, data []byte) error {
+	os, err := b.js.CreateObjectStore(&nats.ObjectStoreConfig{Bucket: objectBucketDur})
+	if err != nil {
+		os, err = b.js.ObjectStore(objectBucketDur)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = os.PutBytes(name, data)
+	return err
+}
+
+func (b *Bus) ObjectGetPersistent(ctx context.Context, name string) ([]byte, error) {
+	os, err := b.js.ObjectStore(objectBucketDur)
 	if err != nil {
 		return nil, nil
 	}

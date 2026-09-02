@@ -440,4 +440,12 @@ func (a *Agent) GetObject(ctx context.Context, name string) ([]byte, error) {
 	return a.b.ObjectGet(ctx, name)
 }
 
+// PutObjectPersistent stores bytes in the durable (no-TTL) object bucket.
+func (a *Agent) PutObjectPersistent(ctx context.Context, name string, data []byte) error {
+	return a.b.ObjectPutPersistent(ctx, name, data)
+}
+func (a *Agent) GetObjectPersistent(ctx context.Context, name string) ([]byte, error) {
+	return a.b.ObjectGetPersistent(ctx, name)
+}
+
 func (a *Agent) Close() error { return a.b.Close() }
