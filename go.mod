@@ -1,4 +1,4 @@
-module forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go
+module github.com/abcp-sdk/abc-protocol-go
 
 go 1.26
 

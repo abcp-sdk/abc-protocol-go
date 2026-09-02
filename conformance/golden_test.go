@@ -3,7 +3,7 @@ package conformance
 import (
 	"testing"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/protocol"
 )
 
 // goldenVectors mirrors packages/sdk/tests/golden.ts in sdk-ts. If either

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/agent"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/extension"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/agent"
+	"github.com/abcp-sdk/abc-protocol-go/extension"
+	"github.com/abcp-sdk/abc-protocol-go/natsrun"
 )
 
 // TestEchoFlowOverNats runs against ABC_NATS_URL when set (live-cluster

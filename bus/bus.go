@@ -3,7 +3,7 @@ package bus
 import (
 	"context"
 
-	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
 )
 
 // RequestOpts tunes a request or broadcast.

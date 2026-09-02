@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/protocol"
 )
 
 // Session lease semantics (protocol-level, cross-replica):

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	abcprotocol "forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
+	"github.com/abcp-sdk/abc-protocol-go/bus"
+	"github.com/abcp-sdk/abc-protocol-go/protocol"
 )
 
 const offloadThreshold = 256 * 1024

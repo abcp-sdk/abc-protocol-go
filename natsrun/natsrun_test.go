@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/agent"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/protocol"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/transport/nats"
+	"github.com/abcp-sdk/abc-protocol-go/agent"
+	"github.com/abcp-sdk/abc-protocol-go/bus"
+	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
 )
 
 func startTestServer(t *testing.T) *Server {

@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"os"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/agent"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/transport/nats"
+	"github.com/abcp-sdk/abc-protocol-go/agent"
+	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
 )
 
 func expect(cond bool, msg string) {

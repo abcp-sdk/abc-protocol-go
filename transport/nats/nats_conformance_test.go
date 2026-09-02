@@ -4,9 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/conformance"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/bus"
+	"github.com/abcp-sdk/abc-protocol-go/conformance"
+	"github.com/abcp-sdk/abc-protocol-go/natsrun"
 )
 
 // TestConformance runs the shared suite on its OWN ephemeral broker per

@@ -4,9 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/bus"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/natsrun"
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/transport/nats"
+	"github.com/abcp-sdk/abc-protocol-go/bus"
+	"github.com/abcp-sdk/abc-protocol-go/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
 )
 
 // TestConformance runs the full protocol suite. Every subtest gets its OWN

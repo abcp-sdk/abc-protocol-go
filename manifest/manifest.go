@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"forgejo.develop.10.199.64.20.nip.io/abc-protocol/sdk-go/extension"
+	"github.com/abcp-sdk/abc-protocol-go/extension"
 	"gopkg.in/yaml.v3"
 )
 
