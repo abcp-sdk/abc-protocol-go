@@ -22,16 +22,18 @@ type Manifest struct {
 
 // ManifestTool declares one tool's metadata; handlers are bound by name.
 type ManifestTool struct {
-	Name        string         `yaml:"name"`
-	Description string         `yaml:"description"`
-	InputSchema map[string]any `yaml:"input_schema"`
+	Name         string            `yaml:"name"`
+	Description  string            `yaml:"description"`
+	Descriptions map[string]string `yaml:"descriptions"`
+	InputSchema  map[string]any    `yaml:"input_schema"`
 }
 
 // ManifestVariable declares one prompt template variable.
 type ManifestVariable struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Scope       string `yaml:"scope"` // "global" | "session"
+	Name         string            `yaml:"name"`
+	Description  string            `yaml:"description"`
+	Descriptions map[string]string `yaml:"descriptions"`
+	Scope        string            `yaml:"scope"` // "global" | "session"
 }
 
 // ManifestConfig declares one config knob the agent may set at runtime.

@@ -33,16 +33,18 @@ func (e *TypedError) Error() string { return e.Message }
 
 // ToolSpec describes a tool and its executor.
 type ToolSpec struct {
-	Description string
-	InputSchema map[string]any
-	Execute     func(ctx context.Context, args map[string]any, callID, sessionName string) (ToolResultData, error)
+	Description  string
+	Descriptions map[string]string
+	InputSchema  map[string]any
+	Execute      func(ctx context.Context, args map[string]any, callID, sessionName string) (ToolResultData, error)
 }
 
 // VariableSpec describes one template variable and its lazy resolver.
 type VariableSpec struct {
-	Description string
-	Scope       string // "global" | "session"
-	Resolve     func(ctx context.Context, sessionName string) (string, error)
+	Description  string
+	Descriptions map[string]string
+	Scope        string // "global" | "session"
+	Resolve      func(ctx context.Context, sessionName string) (string, error)
 }
 
 // Config describes an extension.
@@ -148,9 +150,19 @@ type OnCallHook func(ctx context.Context, hook, sessionName string, args map[str
 type OnEventHook func(ctx context.Context, hook, sessionName string, payload any) error
 
 type manifestTool = struct {
-	Description string                  `json:"description"`
-	InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
-	Name        string                  `json:"name"`
+	Description  string                  `json:"description"`
+	Descriptions *map[string]string      `json:"descriptions,omitempty"`
+	InputSchema  *map[string]interface{} `json:"input_schema,omitempty"`
+	Name         string                  `json:"name"`
+}
+
+// manifestVariables mirrors the Prompt.variables type in types.gen.go so we
+// can assign it directly to e.manifest.Prompt.
+type manifestVariable = struct {
+	Description  *string                                            `json:"description,omitempty"`
+	Descriptions *map[string]string                                 `json:"descriptions,omitempty"`
+	Name         string                                             `json:"name"`
+	Scope        *abcprotocol.ExtensionManifestPromptVariablesScope `json:"scope,omitempty"`
 }
 
 // Extension is the extension-side role.
@@ -179,7 +191,11 @@ func New(b bus.Bus, cfg Config) *Extension {
 			if spec.InputSchema != nil {
 				is = &spec.InputSchema
 			}
-			tools = append(tools, manifestTool{Name: name, Description: spec.Description, InputSchema: is})
+			var ds *map[string]string
+			if spec.Descriptions != nil {
+				ds = &spec.Descriptions
+			}
+			tools = append(tools, manifestTool{Name: name, Description: spec.Description, Descriptions: ds, InputSchema: is})
 		}
 		e.manifest.Tools = &tools
 	}
@@ -190,6 +206,27 @@ func New(b bus.Bus, cfg Config) *Extension {
 		} else {
 			e.manifest.Capabilities = ptrAppendCap(*e.manifest.Capabilities, abcprotocol.Prompt)
 		}
+		vars := []manifestVariable{}
+		for name, spec := range cfg.Variables {
+			v := manifestVariable{Name: name}
+			if spec.Description != "" {
+				d := spec.Description
+				v.Description = &d
+			}
+			if spec.Descriptions != nil {
+				v.Descriptions = &spec.Descriptions
+			}
+			scope := spec.Scope
+			if scope == "" {
+				scope = "global"
+			}
+			s := abcprotocol.ExtensionManifestPromptVariablesScope(scope)
+			v.Scope = &s
+			vars = append(vars, v)
+		}
+		e.manifest.Prompt = &struct {
+			Variables *[]manifestVariable `json:"variables,omitempty"`
+		}{Variables: &vars}
 	}
 	if len(cfg.Config) > 0 {
 		items := []struct {

@@ -410,13 +410,15 @@ type ExtensionManifest struct {
 	Lifecycle *[]ExtensionManifestLifecycle `json:"lifecycle,omitempty"`
 	Prompt    *struct {
 		Variables *[]struct {
-			Description *string                                `json:"description,omitempty"`
-			Name        string                                 `json:"name"`
-			Scope       *ExtensionManifestPromptVariablesScope `json:"scope,omitempty"`
+			Description  *string                                `json:"description,omitempty"`
+			Descriptions *map[string]string                     `json:"descriptions,omitempty"`
+			Name         string                                 `json:"name"`
+			Scope        *ExtensionManifestPromptVariablesScope `json:"scope,omitempty"`
 		} `json:"variables,omitempty"`
 	} `json:"prompt,omitempty"`
 	Tools *[]struct {
-		Description string `json:"description"`
+		Description  string             `json:"description"`
+		Descriptions *map[string]string `json:"descriptions,omitempty"`
 
 		// InputSchema JSON Schema describing tool input.
 		InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
