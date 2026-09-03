@@ -249,7 +249,6 @@ func New(b bus.Bus, cfg Config) *Extension {
 			Description *string                                   `json:"description,omitempty"`
 			EnumValues  *[]string                                 `json:"enum_values,omitempty"`
 			Name        string                                    `json:"name"`
-			Required    *bool                                     `json:"required,omitempty"`
 			Scope       *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
 			Type        abcprotocol.ExtensionManifestConfigType   `json:"type"`
 		}{}
@@ -259,7 +258,6 @@ func New(b bus.Bus, cfg Config) *Extension {
 				Description *string                                   `json:"description,omitempty"`
 				EnumValues  *[]string                                 `json:"enum_values,omitempty"`
 				Name        string                                    `json:"name"`
-				Required    *bool                                     `json:"required,omitempty"`
 				Scope       *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
 				Type        abcprotocol.ExtensionManifestConfigType   `json:"type"`
 			}{Name: name, Type: abcprotocol.ExtensionManifestConfigType(spec.Type)}
@@ -279,10 +277,6 @@ func New(b bus.Bus, cfg Config) *Extension {
 			}
 			s := abcprotocol.ExtensionManifestConfigScope(scope)
 			item.Scope = &s
-			if spec.Required {
-				r := true
-				item.Required = &r
-			}
 			items = append(items, item)
 		}
 		e.manifest.Config = &items

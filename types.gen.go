@@ -377,7 +377,6 @@ type ExtensionConfigItem struct {
 	Description *string                   `json:"description,omitempty"`
 	EnumValues  *[]string                 `json:"enum_values,omitempty"`
 	Name        string                    `json:"name"`
-	Required    *bool                     `json:"required,omitempty"`
 	Scope       *ExtensionConfigItemScope `json:"scope,omitempty"`
 	Type        ExtensionConfigItemType   `json:"type"`
 }
@@ -397,7 +396,6 @@ type ExtensionManifest struct {
 		Description *string                       `json:"description,omitempty"`
 		EnumValues  *[]string                     `json:"enum_values,omitempty"`
 		Name        string                        `json:"name"`
-		Required    *bool                         `json:"required,omitempty"`
 		Scope       *ExtensionManifestConfigScope `json:"scope,omitempty"`
 		Type        ExtensionManifestConfigType   `json:"type"`
 	} `json:"config,omitempty"`

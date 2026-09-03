@@ -50,9 +50,6 @@ type ManifestConfig struct {
 	Default     any      `yaml:"default"`
 	Description string   `yaml:"description"`
 	Scope       string   `yaml:"scope"` // "global" | "session"
-	// Required gates tools that depend on this config: an agent may refuse to
-	// expose them until the value is set.
-	Required bool `yaml:"required"`
 }
 
 type ManifestHooks struct {
@@ -148,7 +145,6 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 			EnumValues:  c.EnumValues,
 			Default:     c.Default,
 			Scope:       c.Scope,
-			Required:    c.Required,
 		}
 	}
 	if m.Hooks != nil {
