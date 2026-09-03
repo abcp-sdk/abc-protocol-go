@@ -32,6 +32,13 @@ type TypedError struct {
 func (e *TypedError) Error() string { return e.Message }
 
 // ToolSpec describes a tool and its executor.
+//
+// InputSchema is an opaque JSON-Schema blob. Convention (protocol-declared):
+// any schema node — typically a property — may carry
+// `descriptions: map[locale]string` next to `description`, mirroring the
+// tool-level Descriptions field. Consumers resolve
+// `descriptions[locale] → descriptions[primary-language] → description`
+// and strip the `descriptions` key before the schema reaches a model.
 type ToolSpec struct {
 	Description  string
 	Descriptions map[string]string

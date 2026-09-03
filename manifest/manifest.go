@@ -25,6 +25,9 @@ type ManifestTool struct {
 	Name         string            `yaml:"name"`
 	Description  string            `yaml:"description"`
 	Descriptions map[string]string `yaml:"descriptions"`
+	// InputSchema is an opaque JSON-Schema blob; any node may carry a
+	// `descriptions: map[locale]string` convention next to `description`
+	// (see extension.ToolSpec for the resolution contract).
 	InputSchema  map[string]any    `yaml:"input_schema"`
 }
 
