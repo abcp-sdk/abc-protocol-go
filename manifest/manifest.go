@@ -29,9 +29,9 @@ type ManifestTool struct {
 	// `descriptions: map[locale]string` convention next to `description`
 	// (see extension.ToolSpec for the resolution contract).
 	InputSchema map[string]any `yaml:"input_schema"`
-	// Config lists the config names this tool depends on (a tool may share a
-	// config with sibling tools). Absent = no config dependencies.
-	Config []string `yaml:"config"`
+	// RequiredConfig lists the config names this tool requires to run (a tool may
+	// share a required config with sibling tools). Absent = no config gating.
+	RequiredConfig []string `yaml:"required_config"`
 }
 
 // ManifestVariable declares one prompt template variable.
@@ -113,7 +113,7 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 		h.Description = t.Description
 		h.Descriptions = t.Descriptions
 		h.InputSchema = t.InputSchema
-		h.Config = t.Config
+		h.RequiredConfig = t.RequiredConfig
 		tools[t.Name] = h
 	}
 

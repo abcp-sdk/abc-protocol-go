@@ -43,9 +43,9 @@ type ToolSpec struct {
 	Description  string
 	Descriptions map[string]string
 	InputSchema  map[string]any
-	// Config declares the config names this tool depends on (a tool may share
-	// a config with sibling tools). Absent = no config dependencies.
-	Config  []string
+	// RequiredConfig declares the config names this tool requires to run (a tool
+	// may share a required config with sibling tools). Absent = no config gating.
+	RequiredConfig  []string
 	Execute func(ctx context.Context, args map[string]any, callID, sessionName string) (ToolResultData, error)
 }
 
@@ -160,7 +160,7 @@ type OnCallHook func(ctx context.Context, hook, sessionName string, args map[str
 type OnEventHook func(ctx context.Context, hook, sessionName string, payload any) error
 
 type manifestTool = struct {
-	Config       *[]string               `json:"config,omitempty"`
+	RequiredConfig *[]string              `json:"required_config,omitempty"`
 	Description  string                  `json:"description"`
 	Descriptions *map[string]string      `json:"descriptions,omitempty"`
 	InputSchema  *map[string]interface{} `json:"input_schema,omitempty"`
@@ -207,10 +207,10 @@ func New(b bus.Bus, cfg Config) *Extension {
 				ds = &spec.Descriptions
 			}
 			var cfgRefs *[]string
-			if spec.Config != nil {
-				cfgRefs = &spec.Config
+			if spec.RequiredConfig != nil {
+				cfgRefs = &spec.RequiredConfig
 			}
-			tools = append(tools, manifestTool{Name: name, Description: spec.Description, Descriptions: ds, InputSchema: is, Config: cfgRefs})
+			tools = append(tools, manifestTool{Name: name, Description: spec.Description, Descriptions: ds, InputSchema: is, RequiredConfig: cfgRefs})
 		}
 		e.manifest.Tools = &tools
 	}

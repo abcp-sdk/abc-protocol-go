@@ -419,7 +419,7 @@ type ExtensionManifest struct {
 		} `json:"variables,omitempty"`
 	} `json:"prompt,omitempty"`
 	Tools *[]struct {
-		Config       *[]string          `json:"config,omitempty"`
+		RequiredConfig *[]string              `json:"required_config,omitempty"`
 		Description  string             `json:"description"`
 		Descriptions *map[string]string `json:"descriptions,omitempty"`
 
@@ -447,7 +447,7 @@ type ExtensionManifestPromptVariablesScope string
 
 // ExtensionTool defines model for ExtensionTool.
 type ExtensionTool struct {
-	Config       *[]string          `json:"config,omitempty"`
+	RequiredConfig *[]string              `json:"required_config,omitempty"`
 	Description  string             `json:"description"`
 	Descriptions *map[string]string `json:"descriptions,omitempty"`
 
