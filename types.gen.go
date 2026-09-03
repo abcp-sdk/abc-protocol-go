@@ -377,6 +377,7 @@ type ExtensionConfigItem struct {
 	Description *string                   `json:"description,omitempty"`
 	EnumValues  *[]string                 `json:"enum_values,omitempty"`
 	Name        string                    `json:"name"`
+	Required    *bool                     `json:"required,omitempty"`
 	Scope       *ExtensionConfigItemScope `json:"scope,omitempty"`
 	Type        ExtensionConfigItemType   `json:"type"`
 }
@@ -396,6 +397,7 @@ type ExtensionManifest struct {
 		Description *string                       `json:"description,omitempty"`
 		EnumValues  *[]string                     `json:"enum_values,omitempty"`
 		Name        string                        `json:"name"`
+		Required    *bool                         `json:"required,omitempty"`
 		Scope       *ExtensionManifestConfigScope `json:"scope,omitempty"`
 		Type        ExtensionManifestConfigType   `json:"type"`
 	} `json:"config,omitempty"`
@@ -417,6 +419,7 @@ type ExtensionManifest struct {
 		} `json:"variables,omitempty"`
 	} `json:"prompt,omitempty"`
 	Tools *[]struct {
+		Config       *[]string          `json:"config,omitempty"`
 		Description  string             `json:"description"`
 		Descriptions *map[string]string `json:"descriptions,omitempty"`
 
@@ -444,7 +447,9 @@ type ExtensionManifestPromptVariablesScope string
 
 // ExtensionTool defines model for ExtensionTool.
 type ExtensionTool struct {
-	Description string `json:"description"`
+	Config       *[]string          `json:"config,omitempty"`
+	Description  string             `json:"description"`
+	Descriptions *map[string]string `json:"descriptions,omitempty"`
 
 	// InputSchema JSON Schema describing tool input.
 	InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
@@ -453,9 +458,10 @@ type ExtensionTool struct {
 
 // ExtensionVariable defines model for ExtensionVariable.
 type ExtensionVariable struct {
-	Description *string                 `json:"description,omitempty"`
-	Name        string                  `json:"name"`
-	Scope       *ExtensionVariableScope `json:"scope,omitempty"`
+	Description  *string                 `json:"description,omitempty"`
+	Descriptions *map[string]string      `json:"descriptions,omitempty"`
+	Name         string                  `json:"name"`
+	Scope        *ExtensionVariableScope `json:"scope,omitempty"`
 }
 
 // ExtensionVariableScope defines model for ExtensionVariable.Scope.

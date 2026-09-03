@@ -28,7 +28,10 @@ type ManifestTool struct {
 	// InputSchema is an opaque JSON-Schema blob; any node may carry a
 	// `descriptions: map[locale]string` convention next to `description`
 	// (see extension.ToolSpec for the resolution contract).
-	InputSchema  map[string]any    `yaml:"input_schema"`
+	InputSchema map[string]any `yaml:"input_schema"`
+	// Config lists the config names this tool depends on (a tool may share a
+	// config with sibling tools). Absent = no config dependencies.
+	Config []string `yaml:"config"`
 }
 
 // ManifestVariable declares one prompt template variable.
@@ -47,6 +50,9 @@ type ManifestConfig struct {
 	Default     any      `yaml:"default"`
 	Description string   `yaml:"description"`
 	Scope       string   `yaml:"scope"` // "global" | "session"
+	// Required gates tools that depend on this config: an agent may refuse to
+	// expose them until the value is set.
+	Required bool `yaml:"required"`
 }
 
 type ManifestHooks struct {
@@ -107,6 +113,7 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 		h.Description = t.Description
 		h.Descriptions = t.Descriptions
 		h.InputSchema = t.InputSchema
+		h.Config = t.Config
 		tools[t.Name] = h
 	}
 
@@ -141,6 +148,7 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 			EnumValues:  c.EnumValues,
 			Default:     c.Default,
 			Scope:       c.Scope,
+			Required:    c.Required,
 		}
 	}
 	if m.Hooks != nil {

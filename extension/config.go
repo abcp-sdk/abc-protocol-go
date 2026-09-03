@@ -18,6 +18,9 @@ type ConfigSpec struct {
 	EnumValues  []string
 	Default     any
 	Scope       string // "global" | "session" (default global)
+	// Required gates tools that depend on this config: an agent may refuse to
+	// expose them until the value is set.
+	Required bool
 }
 
 // OnConfigChangeFunc receives applied config changes. Returning an error (or

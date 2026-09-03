@@ -43,7 +43,10 @@ type ToolSpec struct {
 	Description  string
 	Descriptions map[string]string
 	InputSchema  map[string]any
-	Execute      func(ctx context.Context, args map[string]any, callID, sessionName string) (ToolResultData, error)
+	// Config declares the config names this tool depends on (a tool may share
+	// a config with sibling tools). Absent = no config dependencies.
+	Config  []string
+	Execute func(ctx context.Context, args map[string]any, callID, sessionName string) (ToolResultData, error)
 }
 
 // VariableSpec describes one template variable and its lazy resolver.
@@ -157,6 +160,7 @@ type OnCallHook func(ctx context.Context, hook, sessionName string, args map[str
 type OnEventHook func(ctx context.Context, hook, sessionName string, payload any) error
 
 type manifestTool = struct {
+	Config       *[]string               `json:"config,omitempty"`
 	Description  string                  `json:"description"`
 	Descriptions *map[string]string      `json:"descriptions,omitempty"`
 	InputSchema  *map[string]interface{} `json:"input_schema,omitempty"`
@@ -202,7 +206,11 @@ func New(b bus.Bus, cfg Config) *Extension {
 			if spec.Descriptions != nil {
 				ds = &spec.Descriptions
 			}
-			tools = append(tools, manifestTool{Name: name, Description: spec.Description, Descriptions: ds, InputSchema: is})
+			var cfgRefs *[]string
+			if spec.Config != nil {
+				cfgRefs = &spec.Config
+			}
+			tools = append(tools, manifestTool{Name: name, Description: spec.Description, Descriptions: ds, InputSchema: is, Config: cfgRefs})
 		}
 		e.manifest.Tools = &tools
 	}
@@ -241,6 +249,7 @@ func New(b bus.Bus, cfg Config) *Extension {
 			Description *string                                   `json:"description,omitempty"`
 			EnumValues  *[]string                                 `json:"enum_values,omitempty"`
 			Name        string                                    `json:"name"`
+			Required    *bool                                     `json:"required,omitempty"`
 			Scope       *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
 			Type        abcprotocol.ExtensionManifestConfigType   `json:"type"`
 		}{}
@@ -250,6 +259,7 @@ func New(b bus.Bus, cfg Config) *Extension {
 				Description *string                                   `json:"description,omitempty"`
 				EnumValues  *[]string                                 `json:"enum_values,omitempty"`
 				Name        string                                    `json:"name"`
+				Required    *bool                                     `json:"required,omitempty"`
 				Scope       *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
 				Type        abcprotocol.ExtensionManifestConfigType   `json:"type"`
 			}{Name: name, Type: abcprotocol.ExtensionManifestConfigType(spec.Type)}
@@ -269,6 +279,10 @@ func New(b bus.Bus, cfg Config) *Extension {
 			}
 			s := abcprotocol.ExtensionManifestConfigScope(scope)
 			item.Scope = &s
+			if spec.Required {
+				r := true
+				item.Required = &r
+			}
 			items = append(items, item)
 		}
 		e.manifest.Config = &items
