@@ -17,7 +17,7 @@ import (
 // of a Bus — not owned by the agent.
 const (
 	// FileMetaBucket stores file metadata KV entries.
-	FileMetaBucket = "files.meta"
+	FileMetaBucket = "abc-files-meta"
 
 	// FileMetaPrefix is the KV key prefix for a file's metadata record.
 	FileMetaPrefix = "f."
