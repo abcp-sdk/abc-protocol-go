@@ -417,9 +417,9 @@ type ExtensionManifest struct {
 		} `json:"variables,omitempty"`
 	} `json:"prompt,omitempty"`
 	Tools *[]struct {
-		RequiredConfig *[]string              `json:"required_config,omitempty"`
-		Description  string             `json:"description"`
-		Descriptions *map[string]string `json:"descriptions,omitempty"`
+		RequiredConfig *[]string          `json:"required_config,omitempty"`
+		Description    string             `json:"description"`
+		Descriptions   *map[string]string `json:"descriptions,omitempty"`
 
 		// InputSchema JSON Schema describing tool input.
 		InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
@@ -445,9 +445,9 @@ type ExtensionManifestPromptVariablesScope string
 
 // ExtensionTool defines model for ExtensionTool.
 type ExtensionTool struct {
-	RequiredConfig *[]string              `json:"required_config,omitempty"`
-	Description  string             `json:"description"`
-	Descriptions *map[string]string `json:"descriptions,omitempty"`
+	RequiredConfig *[]string          `json:"required_config,omitempty"`
+	Description    string             `json:"description"`
+	Descriptions   *map[string]string `json:"descriptions,omitempty"`
 
 	// InputSchema JSON Schema describing tool input.
 	InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
@@ -510,6 +510,9 @@ type InterruptSignal struct {
 
 // LifecycleEvent defines model for LifecycleEvent.
 type LifecycleEvent struct {
+	// Id is the unique event id (eid). Durable publishers always set it so
+	// consumers can dedup across replay/redelivery.
+	Id     *string            `json:"id,omitempty"`
 	From   *string            `json:"from,omitempty"`
 	Kind   LifecycleEventKind `json:"kind"`
 	Parent *string            `json:"parent,omitempty"`
