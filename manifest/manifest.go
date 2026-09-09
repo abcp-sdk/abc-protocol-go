@@ -44,12 +44,13 @@ type ManifestVariable struct {
 
 // ManifestConfig declares one config knob the agent may set at runtime.
 type ManifestConfig struct {
-	Name        string   `yaml:"name"`
-	Type        string   `yaml:"type"` // string | number | boolean | enum | json
-	EnumValues  []string `yaml:"enum_values"`
-	Default     any      `yaml:"default"`
-	Description string   `yaml:"description"`
-	Scope       string   `yaml:"scope"` // "global" | "session"
+	Name         string            `yaml:"name"`
+	Type         string            `yaml:"type"` // string | number | boolean | enum | json
+	EnumValues   []string          `yaml:"enum_values"`
+	Default      any               `yaml:"default"`
+	Description  string            `yaml:"description"`
+	Descriptions map[string]string `yaml:"descriptions"`
+	Scope        string            `yaml:"scope"` // "global" | "session"
 }
 
 type ManifestHooks struct {
@@ -140,11 +141,12 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 	}
 	for _, c := range m.Config {
 		cfg.Config[c.Name] = extension.ConfigSpec{
-			Description: c.Description,
-			Type:        c.Type,
-			EnumValues:  c.EnumValues,
-			Default:     c.Default,
-			Scope:       c.Scope,
+			Description:  c.Description,
+			Descriptions: c.Descriptions,
+			Type:         c.Type,
+			EnumValues:   c.EnumValues,
+			Default:      c.Default,
+			Scope:        c.Scope,
 		}
 	}
 	if m.Hooks != nil {

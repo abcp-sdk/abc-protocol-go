@@ -14,10 +14,13 @@ import (
 // ConfigSpec declares one config knob in Extension.Config.
 type ConfigSpec struct {
 	Description string
-	Type        string // string | number | boolean | enum | json
-	EnumValues  []string
-	Default     any
-	Scope       string // "global" | "session" (default global)
+	// Descriptions is the localized map (locale → text); Description is the
+	// fallback, same convention as tool descriptions.
+	Descriptions map[string]string
+	Type         string // string | number | boolean | enum | json
+	EnumValues   []string
+	Default      any
+	Scope        string // "global" | "session" (default global)
 	// Required gates tools that depend on this config: an agent may refuse to
 	// expose them until the value is set.
 	Required bool

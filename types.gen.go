@@ -392,12 +392,13 @@ type ExtensionManifest struct {
 	Capabilities *[]ExtensionManifestCapabilities `json:"capabilities,omitempty"`
 	Config       *[]struct {
 		// Default Default value when unset.
-		Default     interface{}                   `json:"default,omitempty"`
-		Description *string                       `json:"description,omitempty"`
-		EnumValues  *[]string                     `json:"enum_values,omitempty"`
-		Name        string                        `json:"name"`
-		Scope       *ExtensionManifestConfigScope `json:"scope,omitempty"`
-		Type        ExtensionManifestConfigType   `json:"type"`
+		Default      interface{}                   `json:"default,omitempty"`
+		Description  *string                       `json:"description,omitempty"`
+		Descriptions *map[string]string            `json:"descriptions,omitempty"`
+		EnumValues   *[]string                     `json:"enum_values,omitempty"`
+		Name         string                        `json:"name"`
+		Scope        *ExtensionManifestConfigScope `json:"scope,omitempty"`
+		Type         ExtensionManifestConfigType   `json:"type"`
 	} `json:"config,omitempty"`
 	Features *[]string `json:"features,omitempty"`
 	Hooks    *struct {

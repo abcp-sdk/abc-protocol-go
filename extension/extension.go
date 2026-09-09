@@ -245,25 +245,31 @@ func New(b bus.Bus, cfg Config) *Extension {
 	}
 	if len(cfg.Config) > 0 {
 		items := []struct {
-			Default     any                                       `json:"default,omitempty"`
-			Description *string                                   `json:"description,omitempty"`
-			EnumValues  *[]string                                 `json:"enum_values,omitempty"`
-			Name        string                                    `json:"name"`
-			Scope       *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
-			Type        abcprotocol.ExtensionManifestConfigType   `json:"type"`
+			Default      any                                       `json:"default,omitempty"`
+			Description  *string                                   `json:"description,omitempty"`
+			Descriptions *map[string]string                        `json:"descriptions,omitempty"`
+			EnumValues   *[]string                                 `json:"enum_values,omitempty"`
+			Name         string                                    `json:"name"`
+			Scope        *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
+			Type         abcprotocol.ExtensionManifestConfigType   `json:"type"`
 		}{}
 		for name, spec := range cfg.Config {
 			item := struct {
-				Default     any                                       `json:"default,omitempty"`
-				Description *string                                   `json:"description,omitempty"`
-				EnumValues  *[]string                                 `json:"enum_values,omitempty"`
-				Name        string                                    `json:"name"`
-				Scope       *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
-				Type        abcprotocol.ExtensionManifestConfigType   `json:"type"`
+				Default      any                                       `json:"default,omitempty"`
+				Description  *string                                   `json:"description,omitempty"`
+				Descriptions *map[string]string                        `json:"descriptions,omitempty"`
+				EnumValues   *[]string                                 `json:"enum_values,omitempty"`
+				Name         string                                    `json:"name"`
+				Scope        *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
+				Type         abcprotocol.ExtensionManifestConfigType   `json:"type"`
 			}{Name: name, Type: abcprotocol.ExtensionManifestConfigType(spec.Type)}
 			if spec.Description != "" {
 				d := spec.Description
 				item.Description = &d
+			}
+			if spec.Descriptions != nil {
+				ds := spec.Descriptions
+				item.Descriptions = &ds
 			}
 			if spec.EnumValues != nil {
 				item.EnumValues = &spec.EnumValues
