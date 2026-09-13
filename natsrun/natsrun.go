@@ -195,9 +195,9 @@ func (s *Server) precreateMemoryStream() error {
 		return err
 	}
 	for _, sc := range []*nats.StreamConfig{
-		{Name: "ABC_MAILBOX", Subjects: []string{"abc.mailbox.>"}, Storage: nats.MemoryStorage, MaxAge: 24 * time.Hour},
-		{Name: "ABC_EVENTS", Subjects: []string{"abc.session.events.>"}, Storage: nats.MemoryStorage, MaxAge: 24 * time.Hour},
-		{Name: "ABC_DLQ", Subjects: []string{"abc.dlq.>"}, Storage: nats.MemoryStorage, MaxAge: 24 * time.Hour},
+		{Name: "ABC_MAILBOX", Subjects: []string{"abc.*.mailbox.>"}, Storage: nats.MemoryStorage, MaxAge: 24 * time.Hour},
+		{Name: "ABC_EVENTS", Subjects: []string{"abc.*.session.events.>"}, Storage: nats.MemoryStorage, MaxAge: 24 * time.Hour},
+		{Name: "ABC_DLQ", Subjects: []string{"abc.*.dlq.>"}, Storage: nats.MemoryStorage, MaxAge: 24 * time.Hour},
 	} {
 		if _, err := js.AddStream(sc); err != nil {
 			return err

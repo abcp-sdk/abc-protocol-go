@@ -31,29 +31,34 @@ type ConfigSpec struct {
 // `get` reads the effective value of any knob.
 type OnConfigChangeFunc func(ctx context.Context, name string, value any, sessionName string, get func(name, sessionName string) any) error
 
-// ConfigStore keeps applied values: global set + per-session overrides.
-// Mutated from TWO goroutines (live abc.config reqs and the cfg KV watch),
-// so every access goes through mu.
+// ConfigStore keeps applied values per tenant: global set + per-session
+// overrides. Mutated from TWO goroutines (live abc.config reqs and the cfg KV
+// watch), so every access goes through mu.
 type ConfigStore struct {
-	mu      sync.Mutex
-	global  map[string]any
-	session map[string]map[string]any
+	mu sync.Mutex
+	// tenant -> name -> value
+	global map[string]map[string]any
+	// tenant -> session -> name -> value
+	session map[string]map[string]map[string]any
 }
 
 func newConfigStore() *ConfigStore {
-	return &ConfigStore{global: map[string]any{}, session: map[string]map[string]any{}}
+	return &ConfigStore{
+		global:  map[string]map[string]any{},
+		session: map[string]map[string]map[string]any{},
+	}
 }
 
-// Get resolves session override > global set > declared default.
-func (s *ConfigStore) Get(specs map[string]ConfigSpec, name, sessionName string) any {
+// Get resolves session override > global set > declared default for a tenant.
+func (s *ConfigStore) Get(specs map[string]ConfigSpec, tenant, name, sessionName string) any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sessionName != "" {
-		if v, ok := s.session[sessionName][name]; ok {
+		if v, ok := s.session[tenant][sessionName][name]; ok {
 			return v
 		}
 	}
-	if v, ok := s.global[name]; ok {
+	if v, ok := s.global[tenant][name]; ok {
 		return v
 	}
 	if spec, ok := specs[name]; ok {
@@ -63,36 +68,50 @@ func (s *ConfigStore) Get(specs map[string]ConfigSpec, name, sessionName string)
 }
 
 func (e *Extension) applyConfigSet(set abcprotocol.ConfigSet) {
+	tenant := ""
+	if set.Tenant != nil {
+		tenant = *set.Tenant
+	}
 	e.configStore.mu.Lock()
 	defer e.configStore.mu.Unlock()
 	if set.Scope == abcprotocol.ConfigSetScopeSession && set.SessionName != nil {
-		if e.configStore.session[*set.SessionName] == nil {
-			e.configStore.session[*set.SessionName] = map[string]any{}
+		if e.configStore.session[tenant] == nil {
+			e.configStore.session[tenant] = map[string]map[string]any{}
 		}
-		e.configStore.session[*set.SessionName][set.Name] = set.Value
+		if e.configStore.session[tenant][*set.SessionName] == nil {
+			e.configStore.session[tenant][*set.SessionName] = map[string]any{}
+		}
+		e.configStore.session[tenant][*set.SessionName][set.Name] = set.Value
 		return
 	}
-	e.configStore.global[set.Name] = set.Value
+	if e.configStore.global[tenant] == nil {
+		e.configStore.global[tenant] = map[string]any{}
+	}
+	e.configStore.global[tenant][set.Name] = set.Value
 }
 
 func (e *Extension) rollbackConfigSet(set abcprotocol.ConfigSet) {
+	tenant := ""
+	if set.Tenant != nil {
+		tenant = *set.Tenant
+	}
 	e.configStore.mu.Lock()
 	defer e.configStore.mu.Unlock()
 	if set.Scope == abcprotocol.ConfigSetScopeSession && set.SessionName != nil {
-		delete(e.configStore.session[*set.SessionName], set.Name)
+		delete(e.configStore.session[tenant][*set.SessionName], set.Name)
 		return
 	}
-	delete(e.configStore.global, set.Name)
+	delete(e.configStore.global[tenant], set.Name)
 }
 
-// serveConfig subscribes abc.config.<id> (live sets with ack/reject) and
+// serveConfig subscribes abc.*.config.<id> (live sets with ack/reject) and
 // recovers state from the cfg KV bucket — the watch delivers the snapshot
 // at startup and live updates afterwards, so no agent needs to be online.
 func (e *Extension) serveConfig(ctx context.Context) error {
 	if len(e.cfg.Config) == 0 {
 		return nil
 	}
-	if ch, stop, err := e.b.KvWatch(ctx, protocol.ConfigKVBucket, e.cfg.ID+".>"); err == nil {
+	if ch, stop, err := e.b.KvWatch(ctx, protocol.ConfigKVBucket, "t.*."+e.cfg.ID+".>"); err == nil {
 		go func() {
 			for ev := range ch {
 				e.applyConfigKV(ev)
@@ -100,7 +119,7 @@ func (e *Extension) serveConfig(ctx context.Context) error {
 		}()
 		e.subs = append(e.subs, kvWatchStopper{stop})
 	}
-	sub, err := e.b.Subscribe(ctx, protocol.ChConfig(e.cfg.ID), bus.SubscribeOpts{Queue: e.cfg.ID})
+	sub, err := e.b.Subscribe(ctx, "abc.*.config."+e.cfg.ID, bus.SubscribeOpts{Queue: e.cfg.ID})
 	if err != nil {
 		return err
 	}
@@ -119,11 +138,19 @@ func (e *Extension) serveConfig(ctx context.Context) error {
 			if !protocol.Coerce(env.Payload, &set) {
 				continue
 			}
+			tenant := env.Tenant
+			if tenant == "" {
+				tenant = protocol.SubjectTenant(env.Ch)
+			}
+			if tenant != "" && set.Tenant == nil {
+				t := tenant
+				set.Tenant = &t
+			}
 			e.applyConfigSet(set)
 			var rejectErr error
 			if e.cfg.OnConfigChange != nil {
 				rejectErr = e.cfg.OnConfigChange(ctx, set.Name, set.Value, deref(set.SessionName), func(name, sessionName string) any {
-					return e.configStore.Get(e.cfg.Config, name, sessionName)
+					return e.configStore.Get(e.cfg.Config, tenant, name, sessionName)
 				})
 			}
 			if rejectErr != nil {
@@ -139,7 +166,7 @@ func (e *Extension) serveConfig(ctx context.Context) error {
 				} else {
 					res = abcprotocol.HookResponse{Ok: true}
 				}
-				_ = e.b.Publish(ctx, replyTo, res, "")
+				_ = e.b.Publish(ctx, replyTo, res, bus.PublishOpts{Tenant: tenant})
 			}
 		}
 	}()
@@ -148,9 +175,10 @@ func (e *Extension) serveConfig(ctx context.Context) error {
 
 var _ = json.Marshal // reserved
 
-// GetConfig exposes the effective config value (session > global > default).
-func (e *Extension) GetConfig(name, sessionName string) any {
-	return e.configStore.Get(e.cfg.Config, name, sessionName)
+// GetConfig exposes the effective config value (session > global > default)
+// for a tenant.
+func (e *Extension) GetConfig(tenant, name, sessionName string) any {
+	return e.configStore.Get(e.cfg.Config, tenant, name, sessionName)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,69 +188,69 @@ func (e *Extension) GetConfig(name, sessionName string) any {
 // stream (abc.session.events.<token>) — the same channel the agent's SSE
 // handler replays and live-tails. Extensions use it to notify UI listeners
 // about side effects, e.g. "todos-updated" after a todowrite.
-func (e *Extension) PublishSessionEvent(ctx context.Context, sessionName, event string, params any) error {
+func (e *Extension) PublishSessionEvent(ctx context.Context, tenant, sessionName, event string, params any) error {
 	id := protocol.NewID()
-	return e.b.InboxPublish(ctx, protocol.ChSessionEvents(sessionName), map[string]any{
+	return e.b.InboxPublish(ctx, protocol.ChSessionEvents(tenant, sessionName), map[string]any{
 		"event":  event,
 		"params": params,
 		"eid":    id,
-	}, bus.InboxPublishOpts{ID: id, SessionName: sessionName})
+	}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
 }
 
 // PublishMailboxEvent publishes an event to a session's durable mailbox
 // (visible to the agent's ConsumeMailbox loop and any UI tailing it).
-func (e *Extension) PublishMailboxEvent(ctx context.Context, sessionName, eventType string, payload any) error {
+func (e *Extension) PublishMailboxEvent(ctx context.Context, tenant, sessionName, eventType string, payload any) error {
 	if eventType == "" {
 		eventType = "event"
 	}
 	id := protocol.NewID()
-	return e.b.InboxPublish(ctx, protocol.ChMailbox(sessionName), abcprotocol.MailboxMessage{
+	return e.b.InboxPublish(ctx, protocol.ChMailbox(tenant, sessionName), abcprotocol.MailboxMessage{
 		Id:      id,
 		Type:    eventType,
 		Payload: payload,
-	}, bus.InboxPublishOpts{ID: id, SessionName: sessionName})
+	}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
 }
 
 // PutObject stores a (potentially large) object.
-func (e *Extension) PutObject(ctx context.Context, name string, data []byte) error {
-	return e.b.ObjectPut(ctx, name, data)
+func (e *Extension) PutObject(ctx context.Context, tenant, name string, data []byte) error {
+	return e.b.ObjectPut(ctx, protocol.TenantObjectName(tenant, name), data)
 }
 
 // GetObject fetches a stored object (nil bytes when absent).
-func (e *Extension) GetObject(ctx context.Context, name string) ([]byte, error) {
-	return e.b.ObjectGet(ctx, name)
+func (e *Extension) GetObject(ctx context.Context, tenant, name string) ([]byte, error) {
+	return e.b.ObjectGet(ctx, protocol.TenantObjectName(tenant, name))
 }
 
 // PutObjectPersistent stores bytes in the durable (no-TTL) object bucket.
-func (e *Extension) PutObjectPersistent(ctx context.Context, name string, data []byte) error {
-	return e.b.ObjectPutPersistent(ctx, name, data)
+func (e *Extension) PutObjectPersistent(ctx context.Context, tenant, name string, data []byte) error {
+	return e.b.ObjectPutPersistent(ctx, protocol.TenantObjectName(tenant, name), data)
 }
 
 // GetObjectPersistent fetches bytes from the durable (no-TTL) object bucket.
-func (e *Extension) GetObjectPersistent(ctx context.Context, name string) ([]byte, error) {
-	return e.b.ObjectGetPersistent(ctx, name)
+func (e *Extension) GetObjectPersistent(ctx context.Context, tenant, name string) ([]byte, error) {
+	return e.b.ObjectGetPersistent(ctx, protocol.TenantObjectName(tenant, name))
 }
 
 // SetVariable stores a global variable (vars.<extId>.<name>).
-func (e *Extension) SetVariable(ctx context.Context, name, value string) error {
-	return e.b.KVPut(ctx, protocol.VarsBucket, protocol.VarKey(e.cfg.ID, name), value, 0)
+func (e *Extension) SetVariable(ctx context.Context, tenant, name, value string) error {
+	return e.b.KVPut(ctx, protocol.VarsBucket, protocol.VarKey(tenant, e.cfg.ID, name), value, 0)
 }
 
 // SetSessionVariable stores a session variable
 // (vars.<extId>.<sessionToken>.<name>). Agents resolve variables KV-first and
 // fall back to the lazy resolver, so writing here caches hot values.
-func (e *Extension) SetSessionVariable(ctx context.Context, sessionName, name, value string) error {
-	return e.b.KVPut(ctx, protocol.VarsBucket, protocol.SessionVarKey(e.cfg.ID, sessionName, name), value, 0)
+func (e *Extension) SetSessionVariable(ctx context.Context, tenant, sessionName, name, value string) error {
+	return e.b.KVPut(ctx, protocol.VarsBucket, protocol.SessionVarKey(tenant, e.cfg.ID, sessionName, name), value, 0)
 }
 
 // DeleteSessionVariables deletes every session-scoped variable of a session.
 // Called automatically on the "deleted" lifecycle event.
-func (e *Extension) DeleteSessionVariables(ctx context.Context, sessionName string) error {
+func (e *Extension) DeleteSessionVariables(ctx context.Context, tenant, sessionName string) error {
 	for name, spec := range e.cfg.Variables {
 		if spec.Scope != "session" {
 			continue
 		}
-		if err := e.b.KVDelete(ctx, protocol.VarsBucket, protocol.SessionVarKey(e.cfg.ID, sessionName, name)); err != nil {
+		if err := e.b.KVDelete(ctx, protocol.VarsBucket, protocol.SessionVarKey(tenant, e.cfg.ID, sessionName, name)); err != nil {
 			return err
 		}
 	}
@@ -233,11 +261,11 @@ func (e *Extension) DeleteSessionVariables(ctx context.Context, sessionName stri
 // vars.agent.locale), falling back to the given default when absent. The
 // provider id is explicit so an extension can read another extension's (or the
 // agent's) projected KV value for a session.
-func (e *Extension) GetSessionVariable(ctx context.Context, provider, sessionName, name, fallback string) string {
+func (e *Extension) GetSessionVariable(ctx context.Context, tenant, provider, sessionName, name, fallback string) string {
 	if sessionName == "" {
 		return fallback
 	}
-	v, err := e.b.KVGet(ctx, protocol.VarsBucket, protocol.SessionVarKey(provider, sessionName, name))
+	v, err := e.b.KVGet(ctx, protocol.VarsBucket, protocol.SessionVarKey(tenant, provider, sessionName, name))
 	if err != nil || v == "" {
 		return fallback
 	}
@@ -249,10 +277,18 @@ func (e *Extension) GetSessionVariable(ctx context.Context, provider, sessionNam
 func (e *Extension) applyConfigKV(ev bus.KvEvent) {
 	e.configStore.mu.Lock()
 	defer e.configStore.mu.Unlock()
-	// Layout: <extId>.<name> (global) or <extId>.<escapedSession>.<name>.
-	// The session segment is dot-escaped (v0.2.2+); legacy raw keys with
-	// colon-style session names parse identically (no dots to escape).
-	rest := strings.TrimPrefix(ev.Key, e.cfg.ID+".")
+	// Layout: t.<tenant>.<extId>.<name> (global) or
+	// t.<tenant>.<extId>.<escapedSession>.<name> (session).
+	segs := strings.SplitN(ev.Key, ".", 4)
+	if len(segs) < 3 || segs[0] != "t" {
+		return
+	}
+	tenant := segs[1]
+	rest := segs[2]
+	if len(segs) == 4 {
+		rest = segs[2] + "." + segs[3]
+	}
+	rest = strings.TrimPrefix(rest, e.cfg.ID+".")
 	parts := strings.SplitN(rest, ".", 2)
 	if len(parts) == 2 && strings.Contains(parts[1], ".") {
 		// session-scoped: split the session segment off the remainder
@@ -262,9 +298,9 @@ func (e *Extension) applyConfigKV(ev bus.KvEvent) {
 	if ev.Deleted {
 		switch len(parts) {
 		case 1:
-			delete(e.configStore.global, parts[0])
+			delete(e.configStore.global[tenant], parts[0])
 		case 3:
-			if m := e.configStore.session[parts[1]]; m != nil {
+			if m := e.configStore.session[tenant][parts[1]]; m != nil {
 				delete(m, parts[2])
 			}
 		}
@@ -289,13 +325,19 @@ func (e *Extension) applyConfigKV(ev bus.KvEvent) {
 		return
 	}
 	if len(parts) == 1 {
-		e.configStore.global[parts[0]] = v
+		if e.configStore.global[tenant] == nil {
+			e.configStore.global[tenant] = map[string]any{}
+		}
+		e.configStore.global[tenant][parts[0]] = v
 	} else if len(parts) == 2 {
 		sess := protocol.UnescapeKVSegment(parts[0])
-		if e.configStore.session[sess] == nil {
-			e.configStore.session[sess] = map[string]any{}
+		if e.configStore.session[tenant] == nil {
+			e.configStore.session[tenant] = map[string]map[string]any{}
 		}
-		e.configStore.session[sess][parts[1]] = v
+		if e.configStore.session[tenant][sess] == nil {
+			e.configStore.session[tenant][sess] = map[string]any{}
+		}
+		e.configStore.session[tenant][sess][parts[1]] = v
 	}
 }
 

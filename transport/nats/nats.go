@@ -19,9 +19,9 @@ const (
 	streamMailbox   = "ABC_MAILBOX"
 	streamEvents    = "ABC_EVENTS"
 	streamDLQ       = "ABC_DLQ"
-	inboxWildcard   = "abc.mailbox.>"
-	eventsWildcard  = "abc.session.events.>"
-	dlqWildcard     = "abc.dlq.>"
+	inboxWildcard   = "abc.*.mailbox.>"
+	eventsWildcard  = "abc.*.session.events.>"
+	dlqWildcard     = "abc.*.dlq.>"
 	durableConsumer = "abc-mailbox-push"
 	queueGroup      = "abc-mailbox"
 	objectBucket    = "ABC_TOOL"
@@ -129,7 +129,7 @@ func (b *Bus) signMsg(msg *nats.Msg, ch, kind, id string, payload any) {
 	if b.idn == nil {
 		return
 	}
-	h := identity.AuthHeader(*b.idn, identity.Fields{Ch: ch, Kind: kind, ID: id, Payload: payload})
+	h := identity.AuthHeader(*b.idn, identity.Fields{Tenant: envelopeTenant(msg.Data), Ch: ch, Kind: kind, ID: id, Payload: payload})
 	if msg.Header == nil {
 		msg.Header = nats.Header{}
 	}
@@ -152,7 +152,19 @@ func (b *Bus) verifyMsg(m *nats.Msg, raw *rawEnvelope) bool {
 		id = *raw.ID
 	}
 	return identity.Verify(m.Header.Get("abc-id"), b.idn.Secret,
-		identity.Fields{Ch: m.Subject, Kind: raw.Kind, ID: id, Payload: json.RawMessage(raw.Payload)}, sig)
+		identity.Fields{Tenant: raw.Tenant, Ch: m.Subject, Kind: raw.Kind, ID: id, Payload: json.RawMessage(raw.Payload)}, sig)
+}
+
+// envelopeTenant reads just the tenant field out of an already-encoded
+// envelope (used for signing).
+func envelopeTenant(data []byte) string {
+	var raw struct {
+		Tenant string `json:"tenant"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	return raw.Tenant
 }
 
 func sameSubjects(a, b []string) bool {
@@ -171,34 +183,48 @@ func sameSubjects(a, b []string) bool {
 	return true
 }
 
-// streamFor routes a subject to the stream that captures it (subjects are
-// disjoint by design; the pre-0.2 single ABC_MAILBOX stream also captured
-// session events).
+// streamFor routes a (possibly wildcard) subject to its stream by the v2
+// layout abc.<tenant>.<area>...: session.events -> EVENTS, dlq -> DLQ,
+// everything else -> MAILBOX.
 func streamFor(subject string) string {
-	if strings.HasPrefix(subject, eventsWildcard[:len(eventsWildcard)-1]) {
+	seg := strings.Split(subject, ".")
+	if len(seg) > 3 && seg[2] == "session" && seg[3] == "events" {
 		return streamEvents
 	}
-	if strings.HasPrefix(subject, dlqWildcard[:len(dlqWildcard)-1]) {
+	if len(seg) > 2 && seg[2] == "dlq" {
 		return streamDLQ
 	}
 	return streamMailbox
 }
 
-// dlqSubjectFor maps an original queue subject to its dead-letter subject.
+// dlqSubjectFor maps an original queue subject to its tenant dead-letter
+// subject, preserving the tenant segment (abc.<tenant>.dlq.<token>).
 func dlqSubjectFor(subject string) string {
 	token := subject
 	if i := strings.LastIndex(subject, "."); i >= 0 {
 		token = subject[i+1:]
 	}
-	return dlqWildcard[:len(dlqWildcard)-1] + token
+	if tenant := protocol.SubjectTenant(subject); tenant != "" {
+		return protocol.TenantPrefix(tenant) + "dlq." + token
+	}
+	return "abc.dlq." + token
 }
 
 func encode(payload any) ([]byte, error) { return json.Marshal(payload) }
 
-// buildEnvelope assembles the wire envelope in one place. The optional
-// fields ride only when set, mirroring the zod optional() semantics.
-func buildEnvelope(kind, ch string, payload any, id, sessionName, replyTo string) ([]byte, error) {
-	m := map[string]any{"v": 1, "ch": ch, "kind": kind, "payload": payload}
+// tenantOf resolves an outgoing message's tenant: explicit when given, else
+// the subject's tenant segment (data-plane subjects always carry one).
+func tenantOf(ch, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return protocol.SubjectTenant(ch)
+}
+
+// buildEnvelope assembles the wire envelope in one place. `tenant` is
+// REQUIRED on the v2 wire. The optional fields ride only when set.
+func buildEnvelope(kind, ch string, payload any, tenant, id, sessionName, replyTo string) ([]byte, error) {
+	m := map[string]any{"v": 2, "ch": ch, "kind": kind, "tenant": tenant, "payload": payload}
 	if id != "" {
 		m["id"] = id
 	}
@@ -216,6 +242,7 @@ func buildEnvelope(kind, ch string, payload any, id, sessionName, replyTo string
 // every tool call / hook / config delivery).
 type rawEnvelope struct {
 	V           int             `json:"v"`
+	Tenant      string          `json:"tenant"`
 	Ch          string          `json:"ch"`
 	Kind        string          `json:"kind"`
 	ID          *string         `json:"id,omitempty"`
@@ -229,12 +256,19 @@ func decode(m *nats.Msg) (abcprotocol.Envelope, error) {
 	if err := json.Unmarshal(m.Data, &raw); err != nil {
 		return abcprotocol.Envelope{}, err
 	}
-	if raw.V != 1 {
-		log.Printf("[abc] envelope version %d on %s (this build speaks v1); fields may be misinterpreted", raw.V, raw.Ch)
+	// v2 is a breaking layout change: reject anything that is not v2.
+	if raw.V != 2 {
+		log.Printf("[abc] rejecting envelope version %d on %s (this build speaks v2)", raw.V, raw.Ch)
+		return abcprotocol.Envelope{}, fmt.Errorf("unsupported envelope version %d", raw.V)
+	}
+	// Envelope tenant must agree with the subject's tenant segment.
+	if expected := protocol.SubjectTenant(m.Subject); expected != "" && raw.Tenant != expected {
+		return abcprotocol.Envelope{}, fmt.Errorf("envelope tenant %q != subject tenant %q on %s", raw.Tenant, expected, m.Subject)
 	}
 	v := raw.V
 	env := abcprotocol.Envelope{
 		V:           &v,
+		Tenant:      raw.Tenant,
 		Ch:          raw.Ch,
 		Kind:        abcprotocol.EnvelopeKind(raw.Kind),
 		Id:          raw.ID,
@@ -248,7 +282,7 @@ func decode(m *nats.Msg) (abcprotocol.Envelope, error) {
 }
 
 func (b *Bus) Request(ctx context.Context, ch string, payload any, opts bus.RequestOpts) (abcprotocol.Envelope, error) {
-	data, err := buildEnvelope("req", ch, payload, "", opts.SessionName, "")
+	data, err := buildEnvelope("req", ch, payload, tenantOf(ch, opts.Tenant), "", opts.SessionName, "")
 	if err != nil {
 		return abcprotocol.Envelope{}, err
 	}
@@ -283,7 +317,7 @@ func (b *Bus) Request(ctx context.Context, ch string, payload any, opts bus.Requ
 }
 
 func (b *Bus) RequestMany(ctx context.Context, ch string, payload any, opts bus.RequestOpts) ([]abcprotocol.Envelope, error) {
-	data, err := buildEnvelope("req", ch, payload, "", "", "")
+	data, err := buildEnvelope("req", ch, payload, tenantOf(ch, opts.Tenant), "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +331,9 @@ func (b *Bus) RequestMany(ctx context.Context, ch string, payload any, opts bus.
 	msg := nats.NewMsg(ch)
 	msg.Data = data
 	msg.Reply = inbox
+	if b.idn != nil {
+		b.signMsg(msg, ch, "req", "", payload)
+	}
 	if err := b.nc.PublishMsg(msg); err != nil {
 		return nil, err
 	}
@@ -311,6 +348,12 @@ func (b *Bus) RequestMany(ctx context.Context, ch string, payload any, opts bus.
 		if err != nil {
 			return out, nil
 		}
+		if b.idn != nil {
+			var raw rawEnvelope
+			if json.Unmarshal(m.Data, &raw) == nil && !b.verifyMsg(m, &raw) {
+				continue
+			}
+		}
 		env, err := decode(m)
 		if err != nil {
 			continue
@@ -319,13 +362,16 @@ func (b *Bus) RequestMany(ctx context.Context, ch string, payload any, opts bus.
 	}
 }
 
-func (b *Bus) Publish(ctx context.Context, ch string, payload any, replyTo string) error {
-	data, err := buildEnvelope("pub", ch, payload, "", "", replyTo)
+func (b *Bus) Publish(ctx context.Context, ch string, payload any, opts bus.PublishOpts) error {
+	data, err := buildEnvelope("pub", ch, payload, tenantOf(ch, opts.Tenant), "", "", opts.ReplyTo)
 	if err != nil {
 		return err
 	}
 	msg := nats.NewMsg(ch)
 	msg.Data = data
+	if opts.ReplyTo != "" {
+		msg.Reply = opts.ReplyTo
+	}
 	b.signMsg(msg, ch, "pub", "", payload)
 	return b.nc.PublishMsg(msg)
 }
@@ -377,7 +423,7 @@ func (s *natsSub) Next(ctx context.Context) (abcprotocol.Envelope, bool) {
 func (s *natsSub) Close() error { return s.sub.Unsubscribe() }
 
 func (b *Bus) InboxPublish(ctx context.Context, ch string, payload any, opts bus.InboxPublishOpts) error {
-	data, err := buildEnvelope("queue", ch, payload, opts.ID, opts.SessionName, "")
+	data, err := buildEnvelope("queue", ch, payload, tenantOf(ch, opts.Tenant), opts.ID, opts.SessionName, "")
 	if err != nil {
 		return err
 	}

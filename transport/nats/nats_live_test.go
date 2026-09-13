@@ -41,7 +41,7 @@ func TestEchoFlowOverNats(t *testing.T) {
 		Tools: map[string]extension.ToolSpec{
 			"echo": {
 				Description: "echo a message",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					msg, _ := args["msg"].(string)
 					return extension.ToolResultData{Content: "echo: " + msg}, nil
 				},
@@ -57,7 +57,7 @@ func TestEchoFlowOverNats(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	a := agent.New(bus)
-	tr, err := a.CallTool(ctx, "s1", "nats-ext", "echo", "c1", map[string]any{"msg": "hi"})
+	tr, err := a.CallTool(ctx, "t1", "s1", "nats-ext", "echo", "c1", map[string]any{"msg": "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}

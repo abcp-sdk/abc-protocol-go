@@ -32,9 +32,9 @@ type ConfigAuthority struct {
 	bus        bus.Bus
 	defaultAck bool
 
-	declarations map[string][]abcprotocol.ExtensionConfigItem
-	global       map[string]map[string]configValue            // extId -> name -> v
-	sessions     map[string]map[string]map[string]configValue // extId -> session -> name -> v
+	declarations map[string]map[string][]abcprotocol.ExtensionConfigItem // tenant -> extId -> items
+	global       map[string]map[string]map[string]configValue            // tenant -> extId -> name -> v
+	sessions     map[string]map[string]map[string]map[string]configValue // tenant -> extId -> session -> name -> v
 	cancel       context.CancelFunc
 	started      bool
 }
@@ -46,9 +46,9 @@ func (a *Agent) ServeConfig(defaultAck bool) error {
 		a.configAuthority = &ConfigAuthority{
 			bus:          a.b,
 			defaultAck:   defaultAck,
-			declarations: map[string][]abcprotocol.ExtensionConfigItem{},
-			global:       map[string]map[string]configValue{},
-			sessions:     map[string]map[string]map[string]configValue{},
+			declarations: map[string]map[string][]abcprotocol.ExtensionConfigItem{},
+			global:       map[string]map[string]map[string]configValue{},
+			sessions:     map[string]map[string]map[string]map[string]configValue{},
 		}
 	}
 	if a.configAuthority.started {
@@ -66,7 +66,7 @@ func (a *Agent) ServeConfig(defaultAck bool) error {
 // SetConfig validates against the (cached or provided) manifest, persists via
 // the KV mirror, then delivers with an ack. A rejection rolls the value back
 // and returns *ConfigError.
-func (a *Agent) SetConfig(ctx context.Context, extID, name string, value any, sessionName string, manifest *abcprotocol.ExtensionManifest, ack *bool) error {
+func (a *Agent) SetConfig(ctx context.Context, tenant, extID, name string, value any, sessionName string, manifest *abcprotocol.ExtensionManifest, ack *bool) error {
 	c := a.configAuthority
 	if c == nil || !c.started {
 		return &ConfigError{Code: "invalid_argument", Message: "ServeConfig() was not called"}
@@ -79,29 +79,32 @@ func (a *Agent) SetConfig(ctx context.Context, extID, name string, value any, se
 		}
 		m = cached
 	}
-	c.declare(m)
-	return c.set(ctx, extID, name, value, sessionName, ack)
+	c.declare(tenant, m)
+	return c.set(ctx, tenant, extID, name, value, sessionName, ack)
 }
 
-func (c *ConfigAuthority) declare(m *abcprotocol.ExtensionManifest) {
+func (c *ConfigAuthority) declare(tenant string, m *abcprotocol.ExtensionManifest) {
+	if c.declarations[tenant] == nil {
+		c.declarations[tenant] = map[string][]abcprotocol.ExtensionConfigItem{}
+	}
 	if m.Config == nil {
-		c.declarations[m.Id] = nil
+		c.declarations[tenant][m.Id] = nil
 		return
 	}
 	// The manifest embeds a structurally identical (generated) config item
 	// type; re-encode into the standalone ExtensionConfigItem shape.
 	raw, err := json.Marshal(*m.Config)
 	if err != nil {
-		c.declarations[m.Id] = nil
+		c.declarations[tenant][m.Id] = nil
 		return
 	}
 	var items []abcprotocol.ExtensionConfigItem
 	if json.Unmarshal(raw, &items) != nil {
-		c.declarations[m.Id] = nil
+		c.declarations[tenant][m.Id] = nil
 		return
 	}
-	c.declarations[m.Id] = items
-	c.recover(m.Id)
+	c.declarations[tenant][m.Id] = items
+	c.recover(tenant, m.Id)
 }
 
 // configKVEnvelope is the persisted shape: the value plus the per-key
@@ -124,28 +127,32 @@ func decodeConfigEnvelope(raw string) (configKVEnvelope, bool) {
 	return configKVEnvelope{}, false
 }
 
-func (c *ConfigAuthority) recover(extID string) {
-	for _, item := range c.declarations[extID] {
-		raw, _ := c.bus.KVGet(context.Background(), protocol.ConfigKVBucket, configKVKey(extID, "global", "", item.Name))
+func (c *ConfigAuthority) recover(tenant, extID string) {
+	for _, item := range c.declarations[tenant][extID] {
+		raw, _ := c.bus.KVGet(context.Background(), protocol.ConfigKVBucket, configKVKey(tenant, extID, "global", "", item.Name))
 		if raw == "" {
 			continue
 		}
 		if env, ok := decodeConfigEnvelope(raw); ok {
-			if c.global[extID] == nil {
-				c.global[extID] = map[string]configValue{}
+			if c.global[tenant] == nil {
+				c.global[tenant] = map[string]map[string]configValue{}
 			}
-			if cur, exists := c.global[extID][item.Name]; !exists || env.Revision > cur.Revision {
-				c.global[extID][item.Name] = configValue{Revision: env.Revision, Value: env.Value}
+			if c.global[tenant][extID] == nil {
+				c.global[tenant][extID] = map[string]configValue{}
+			}
+			if cur, exists := c.global[tenant][extID][item.Name]; !exists || env.Revision > cur.Revision {
+				c.global[tenant][extID][item.Name] = configValue{Revision: env.Revision, Value: env.Value}
 			}
 		}
 	}
 }
 
-func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any, sessionName string, ack *bool) error {
+func (c *ConfigAuthority) set(ctx context.Context, tenant, extID, name string, value any, sessionName string, ack *bool) error {
 	var item *abcprotocol.ExtensionConfigItem
-	for i := range c.declarations[extID] {
-		if c.declarations[extID][i].Name == name {
-			item = &c.declarations[extID][i]
+	items := c.declarations[tenant][extID]
+	for i := range items {
+		if items[i].Name == name {
+			item = &items[i]
 			break
 		}
 	}
@@ -170,21 +177,27 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 
 	// Bump revision per (extId, scope, session, name) key.
 	var revision int64
+	if c.global[tenant] == nil {
+		c.global[tenant] = map[string]map[string]configValue{}
+	}
+	if c.global[tenant][extID] == nil {
+		c.global[tenant][extID] = map[string]configValue{}
+	}
 	if scope == "global" {
-		if c.global[extID] == nil {
-			c.global[extID] = map[string]configValue{}
-		}
-		revision = c.global[extID][name].Revision + 1
-		c.global[extID][name] = configValue{Revision: revision, Value: value}
+		revision = c.global[tenant][extID][name].Revision + 1
+		c.global[tenant][extID][name] = configValue{Revision: revision, Value: value}
 	} else {
-		if c.sessions[extID] == nil {
-			c.sessions[extID] = map[string]map[string]configValue{}
+		if c.sessions[tenant] == nil {
+			c.sessions[tenant] = map[string]map[string]map[string]configValue{}
 		}
-		if c.sessions[extID][sessionName] == nil {
-			c.sessions[extID][sessionName] = map[string]configValue{}
+		if c.sessions[tenant][extID] == nil {
+			c.sessions[tenant][extID] = map[string]map[string]configValue{}
 		}
-		revision = c.sessions[extID][sessionName][name].Revision + 1
-		c.sessions[extID][sessionName][name] = configValue{Revision: revision, Value: value}
+		if c.sessions[tenant][extID][sessionName] == nil {
+			c.sessions[tenant][extID][sessionName] = map[string]configValue{}
+		}
+		revision = c.sessions[tenant][extID][sessionName][name].Revision + 1
+		c.sessions[tenant][extID][sessionName][name] = configValue{Revision: revision, Value: value}
 	}
 
 	// Persist first (crash-safe): the cfg KV bucket is the source of truth —
@@ -192,17 +205,19 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 	// restarted agent restores its revision counters too).
 	raw, err := json.Marshal(configKVEnvelope{Revision: revision, Value: value})
 	if err == nil {
-		_ = c.bus.KVPut(ctx, protocol.ConfigKVBucket, configKVKey(extID, scope, sessionName, name), string(raw), 0)
+		_ = c.bus.KVPut(ctx, protocol.ConfigKVBucket, configKVKey(tenant, extID, scope, sessionName, name), string(raw), 0)
 	}
 
 	// Deliver as 1:1 req with optional ack.
 	ackVal := useAck
+	tenantVal := tenant
 	setPayload := abcprotocol.ConfigSet{
 		Name:     name,
 		Value:    value,
 		Revision: int(revision),
 		Scope:    abcprotocol.ConfigSetScope(scope),
 		Ack:      &ackVal,
+		Tenant:   &tenantVal,
 	}
 	if sessionName != "" {
 		setPayload.SessionName = &sessionName
@@ -210,14 +225,14 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 	// Deliver as 1:1 req. `ack=false` means the extension does not send a
 	// HookResponse; to keep the call bounded (and the value applied
 	// optimistically), wait a short grace period and ignore a timeout.
-	reqOpts := bus.RequestOpts{TimeoutMs: 300}
+	reqOpts := bus.RequestOpts{TimeoutMs: 300, Tenant: tenant}
 	if useAck {
 		reqOpts.TimeoutMs = 5000
 	}
 	if sessionName != "" {
 		reqOpts.SessionName = sessionName
 	}
-	reply, err := c.bus.Request(ctx, protocol.ChConfig(extID), setPayload, reqOpts)
+	reply, err := c.bus.Request(ctx, protocol.ChConfig(tenant, extID), setPayload, reqOpts)
 	if err != nil {
 		// Delivery is best-effort in the 0.2 model: the value is already
 		// committed to the cfg KV bucket (the source of truth), so an
@@ -236,13 +251,13 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 	if !hr.Ok {
 		// Roll back memory + KV.
 		if scope == "global" {
-			if cv, ok := c.global[extID][name]; ok && cv.Revision == revision {
-				delete(c.global[extID], name)
+			if cv, ok := c.global[tenant][extID][name]; ok && cv.Revision == revision {
+				delete(c.global[tenant][extID], name)
 			}
-		} else if cv, ok := c.sessions[extID][sessionName][name]; ok && cv.Revision == revision {
-			delete(c.sessions[extID][sessionName], name)
+		} else if cv, ok := c.sessions[tenant][extID][sessionName][name]; ok && cv.Revision == revision {
+			delete(c.sessions[tenant][extID][sessionName], name)
 		}
-		_ = c.bus.KVDelete(ctx, protocol.ConfigKVBucket, configKVKey(extID, scope, sessionName, name))
+		_ = c.bus.KVDelete(ctx, protocol.ConfigKVBucket, configKVKey(tenant, extID, scope, sessionName, name))
 		msg := "extension rejected the config change"
 		if hr.Error != nil {
 			msg = hr.Error.Message
@@ -253,26 +268,26 @@ func (c *ConfigAuthority) set(ctx context.Context, extID, name string, value any
 }
 
 // DropSessionConfig removes per-session overrides when a session ends.
-func (a *Agent) DropSessionConfig(ctx context.Context, extID, sessionName string) {
+func (a *Agent) DropSessionConfig(ctx context.Context, tenant, extID, sessionName string) {
 	c := a.configAuthority
 	if c == nil {
 		return
 	}
-	if vals, ok := c.sessions[extID][sessionName]; ok {
+	if vals, ok := c.sessions[tenant][extID][sessionName]; ok {
 		for name := range vals {
-			_ = c.bus.KVDelete(ctx, protocol.ConfigKVBucket, configKVKey(extID, "session", sessionName, name))
+			_ = c.bus.KVDelete(ctx, protocol.ConfigKVBucket, configKVKey(tenant, extID, "session", sessionName, name))
 		}
-		delete(c.sessions[extID], sessionName)
+		delete(c.sessions[tenant][extID], sessionName)
 	}
 }
 
-func (c *ConfigAuthority) fillSnapshot(extID string, snap *abcprotocol.ConfigSnapshot) {
+func (c *ConfigAuthority) fillSnapshot(tenant, extID string, snap *abcprotocol.ConfigSnapshot) {
 	g := map[string]any{}
-	for name, cv := range c.global[extID] {
+	for name, cv := range c.global[tenant][extID] {
 		g[name] = cv.Value
 	}
 	sessions := map[string]map[string]any{}
-	for sess, vals := range c.sessions[extID] {
+	for sess, vals := range c.sessions[tenant][extID] {
 		rec := map[string]any{}
 		for name, cv := range vals {
 			rec[name] = cv.Value
@@ -283,11 +298,11 @@ func (c *ConfigAuthority) fillSnapshot(extID string, snap *abcprotocol.ConfigSna
 	snap.Sessions = sessions
 }
 
-func configKVKey(extID, scope, sessionName, name string) string {
+func configKVKey(tenant, extID, scope, sessionName, name string) string {
 	if scope == "session" {
-		return extID + "." + protocol.EscapeKVSegment(sessionName) + "." + name
+		return protocol.TenantKVKey(tenant, extID+"."+protocol.EscapeKVSegment(sessionName)+"."+name)
 	}
-	return extID + "." + name
+	return protocol.TenantKVKey(tenant, extID+"."+name)
 }
 
 func validateConfigValue(item *abcprotocol.ExtensionConfigItem, value any) string {

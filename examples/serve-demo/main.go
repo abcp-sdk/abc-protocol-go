@@ -42,12 +42,12 @@ func main() {
 	cfg := m.BuildConfig(manifest.Bindings{
 		Handlers: map[string]extension.ToolSpec{
 			"ping": {
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					return extension.ToolResultData{Content: "pong " + abcprotocol.ArgString(args, "msg")}, nil
 				},
 			},
 		},
-		OnLifecycle: func(ctx context.Context, ev abcprotocol.LifecycleEvent) error {
+		OnLifecycle: func(ctx context.Context, ev abcprotocol.LifecycleEvent, tenant string) error {
 			log.Info("lifecycle", "kind", string(ev.Kind), "session", ev.SessionName)
 			return nil
 		},
@@ -56,7 +56,7 @@ func main() {
 	if err := extension.Serve(extension.New(nbus, cfg), extension.ServeOptions{
 		Run: func(ctx context.Context, ext *extension.Extension) {
 			log.Info("listening", "nats", nbusAddr)
-			_ = ext.PublishSessionEvent(ctx, "demo", "started", nil)
+			_ = ext.PublishSessionEvent(ctx, "demo", "demo", "started", nil)
 		},
 	}); err != nil {
 		log.Error("serve failed", "err", err)

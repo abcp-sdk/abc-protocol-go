@@ -41,20 +41,20 @@ func main() {
 		Tools: map[string]extension.ToolSpec{
 			"echo": {
 				Description: "echo content back",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					msg, _ := args["msg"].(string)
 					return extension.ToolResultData{Content: "go-ext echo: " + msg}, nil
 				},
 			},
 			"session": {
 				Description: "echo the session name",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					return extension.ToolResultData{Content: "session=" + session}, nil
 				},
 			},
 			"fail": {
 				Description: "always returns a business error",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					return extension.ToolResultData{}, &extension.TypedError{
 						Code:    abcprotocol.ToolResultErrorCodeBusiness,
 						Message: "deliberate failure",
@@ -63,8 +63,8 @@ func main() {
 			},
 		},
 		EventHooks: []string{"interop.event"},
-		OnEventHook: func(ctx context.Context, hook, session string, payload any) error {
-			fmt.Printf("[go-ext] event hook=%s session=%s payload=%v\n", hook, session, payload)
+		OnEventHook: func(ctx context.Context, hook, session string, payload any, tenant string) error {
+			fmt.Printf("[go-ext] event hook=%s session=%s tenant=%s payload=%v\n", hook, session, tenant, payload)
 			return nil
 		},
 	})

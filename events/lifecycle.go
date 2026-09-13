@@ -37,7 +37,7 @@ type LifecyclePublishOpts struct {
 // LifecyclePublish publishes one lifecycle event on abc.session.lifecycle.<kind>.
 // It always stamps a unique eid so consumers can dedup. If `inbox` is true it
 // uses the durable inbox publish path (at-least-once).
-func LifecyclePublish(ctx context.Context, b bus.Bus, kind abcprotocol.LifecycleEventKind, sessionName string, payload any, opts LifecyclePublishOpts) error {
+func LifecyclePublish(ctx context.Context, b bus.Bus, tenant string, kind abcprotocol.LifecycleEventKind, sessionName string, payload any, opts LifecyclePublishOpts) error {
 	id := protocol.NewID()
 	ev := abcprotocol.LifecycleEvent{
 		Id:          &id,
@@ -64,11 +64,11 @@ func LifecyclePublish(ctx context.Context, b bus.Bus, kind abcprotocol.Lifecycle
 			}
 		}
 	}
-	ch := protocol.ChLifecycle(string(kind))
+	ch := protocol.ChLifecycle(tenant, string(kind))
 	if opts.Inbox {
-		return b.InboxPublish(ctx, ch, ev, bus.InboxPublishOpts{ID: id})
+		return b.InboxPublish(ctx, ch, ev, bus.InboxPublishOpts{ID: id, Tenant: tenant})
 	}
-	return b.Publish(ctx, ch, ev, "")
+	return b.Publish(ctx, ch, ev, bus.PublishOpts{Tenant: tenant})
 }
 
 // LifecycleConsumerSubscription is a durable lifecycle subscription.

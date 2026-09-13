@@ -40,7 +40,7 @@ func TestStartStop(t *testing.T) {
 	go func() {
 		env, ok := sub.Next(context.Background())
 		if ok && env.ReplyTo != nil {
-			_ = b.Publish(context.Background(), *env.ReplyTo, "pong", "")
+			_ = b.Publish(context.Background(), *env.ReplyTo, "pong", bus.PublishOpts{})
 		}
 	}()
 	reply, err := b.Request(context.Background(), "ping.x", "hi", bus.RequestOpts{TimeoutMs: 2000})
@@ -63,7 +63,7 @@ func TestMemoryStorageRoundtrip(t *testing.T) {
 	_ = agent.New(b)
 
 	ctx := context.Background()
-	if err := b.InboxPublish(ctx, "abc.mailbox.test1", map[string]any{"k": 1}, bus.InboxPublishOpts{ID: "m1", SessionName: "s"}); err != nil {
+	if err := b.InboxPublish(ctx, protocol.ChMailbox("t1", "test1"), map[string]any{"k": 1}, bus.InboxPublishOpts{ID: "m1", SessionName: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	rev, err := b.KVCreate(ctx, "cfg", "k", "v", 60_000)
@@ -73,7 +73,7 @@ func TestMemoryStorageRoundtrip(t *testing.T) {
 	if v, _ := b.KVGet(ctx, "cfg", "k"); v != "v" {
 		t.Fatalf("kvGet = %q", v)
 	}
-	envs, err := b.Replay(ctx, "abc.mailbox.test1")
+	envs, err := b.Replay(ctx, protocol.ChMailbox("t1", "test1"))
 	if err != nil || len(envs) != 1 {
 		t.Fatalf("replay = %d %v", len(envs), err)
 	}

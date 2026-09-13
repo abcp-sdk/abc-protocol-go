@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -15,33 +16,123 @@ func SessionToken(sessionName string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])[:22]
 }
 
+// ---- tenant namespacing (v2) --------------------------------------------
+//
+// A tenant is an opaque, plaintext isolation key (typically a user id). It is
+// the SECOND subject segment for every data-plane channel — abc.<tenant>.<...>
+// — and rides every envelope in its Tenant field. Plaintext keeps subjects and
+// KV keys readable for operators; the cost is a strict charset so a tenant can
+// never inject a subject separator ('.'), wildcard ('*'/'>'), or whitespace.
+
+var tenantRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// GlobalTenant is the reserved tenant for GLOBAL control-plane messages
+// (discovery), whose subject carries no tenant segment.
+const GlobalTenant = "global"
+
+// IsValidTenant reports whether raw is a legal tenant id.
+func IsValidTenant(raw string) bool { return tenantRe.MatchString(raw) }
+
+// ValidateTenant returns raw when it is legal, or "" when it is not. Callers
+// on an error path should reject the message.
+func ValidateTenant(raw string) (string, bool) {
+	if !tenantRe.MatchString(raw) {
+		return "", false
+	}
+	return raw, true
+}
+
+// TenantPrefix is the data-plane subject prefix for a tenant: abc.<tenant>.
+func TenantPrefix(tenant string) string { return "abc." + tenant + "." }
+
+// SubjectTenant extracts the tenant segment from an abc.<tenant>.<...>
+// subject, or "" when the subject is not tenant-namespaced (e.g. the global
+// abc.discover).
+func SubjectTenant(ch string) string {
+	if !strings.HasPrefix(ch, "abc.") {
+		return ""
+	}
+	rest := ch[len("abc."):]
+	dot := strings.IndexByte(rest, '.')
+	if dot <= 0 {
+		return ""
+	}
+	tenant := rest[:dot]
+	if !tenantRe.MatchString(tenant) {
+		return ""
+	}
+	return tenant
+}
+
+// TenantKVKey is a tenant-scoped KV key in a shared bucket: t.<tenant>.<rest>.
+func TenantKVKey(tenant, rest string) string {
+	return "t." + tenant + "." + rest
+}
+
+// TenantObjectName is a tenant-scoped object-store name: t.<tenant>.<name>.
+func TenantObjectName(tenant, name string) string {
+	return "t." + tenant + "." + name
+}
+
 const (
-	ChDiscover        = "abc.discover"
-	MailboxWildcard   = "abc.mailbox."
-	LifecycleWildcard = "abc.session.lifecycle."
-	// VarsBucket stores extension variables: global vars are keyed
-	// vars.<extId>.<name>, session vars vars.<extId>.<sessionToken>.<name>.
+	ChDiscover = "abc.discover"
+	// MailboxWildcard is the per-tenant mailbox prefix (append the token).
+	// MailboxWildcardAll spans every tenant (cross-tenant consumers).
+	MailboxWildcard    = "abc."
+	MailboxWildcardAll = "abc.*.mailbox."
+	// LifecycleWildcard spans every tenant's lifecycle subject.
+	LifecycleWildcard = "abc.*.session.lifecycle."
+	// VarsBucket stores extension variables, keyed tenant-first:
+	// t.<tenant>.<extId>.<name> (global) and
+	// t.<tenant>.<extId>.<sessionToken>.<name> (session).
 	VarsBucket = "vars"
 )
 
-func ChToolCall(extID, tool string) string  { return "abc.tool.call." + extID + "." + tool }
-func ChToolProgress(callID string) string   { return "abc.tool.progress." + callID }
-func ChVariable(extID, name string) string  { return "abc.var." + extID + "." + name }
-func ChMailbox(session string) string       { return "abc.mailbox." + SessionToken(session) }
-func ChSessionEvents(session string) string { return "abc.session.events." + SessionToken(session) }
-func ChInterrupt(extID string) string       { return "abc.ctl.interrupt." + extID }
-func ChHookCall(extID, hook string) string  { return "abc.hook.call." + extID + "." + hook }
-func ChHookEvent(hook string) string        { return "abc.hook.event." + hook }
+func ChToolCall(tenant, extID, tool string) string {
+	return TenantPrefix(tenant) + "tool.call." + extID + "." + tool
+}
+func ChToolProgress(tenant, callID string) string {
+	return TenantPrefix(tenant) + "tool.progress." + callID
+}
+func ChVariable(tenant, extID, name string) string {
+	return TenantPrefix(tenant) + "var." + extID + "." + name
+}
+func ChMailbox(tenant, session string) string {
+	return TenantPrefix(tenant) + "mailbox." + SessionToken(session)
+}
+func ChSessionEvents(tenant, session string) string {
+	return TenantPrefix(tenant) + "session.events." + SessionToken(session)
+}
+func ChSessionChanged(tenant string) string {
+	return TenantPrefix(tenant) + "session.changed"
+}
+func ChInterrupt(tenant, extID string) string {
+	return TenantPrefix(tenant) + "ctl.interrupt." + extID
+}
+func ChInterruptAll(tenant string) string {
+	return TenantPrefix(tenant) + "ctl.interrupt.>"
+}
+func ChHookCall(tenant, extID, hook string) string {
+	return TenantPrefix(tenant) + "hook.call." + extID + "." + hook
+}
+func ChHookEvent(tenant, hook string) string {
+	return TenantPrefix(tenant) + "hook.event." + hook
+}
 
-// ChLifecycle routes one lifecycle kind (created/forked/renamed/deleted).
-func ChLifecycle(kind string) string { return LifecycleWildcard + kind }
+// ChLifecycle routes one tenant's lifecycle kind (created/forked/renamed/deleted).
+func ChLifecycle(tenant, kind string) string {
+	return TenantPrefix(tenant) + "session.lifecycle." + kind
+}
 
-// VarKey is the global variable KV key (vars.<extId>.<name>).
-func VarKey(extID, name string) string { return extID + "." + name }
+// VarKey is the global variable KV key (t.<tenant>.<extId>.<name>).
+func VarKey(tenant, extID, name string) string {
+	return TenantKVKey(tenant, extID+"."+name)
+}
 
-// SessionVarKey is the session variable KV key (vars.<extId>.<token>.<name>).
-func SessionVarKey(extID, sessionName, name string) string {
-	return extID + "." + SessionToken(sessionName) + "." + name
+// SessionVarKey is the session variable KV key
+// (t.<tenant>.<extId>.<token>.<name>).
+func SessionVarKey(tenant, extID, sessionName, name string) string {
+	return TenantKVKey(tenant, extID+"."+SessionToken(sessionName)+"."+name)
 }
 
 // ArgString reads a string tool argument (missing/typed wrong = "").
@@ -76,16 +167,26 @@ func ArgBool(args map[string]any, key string, def bool) bool {
 	}
 	return def
 }
-func ChConfig(extID string) string { return "abc.config." + extID }
+func ChConfig(tenant, extID string) string {
+	return TenantPrefix(tenant) + "config." + extID
+}
 
 // ChConfigGet is DEPRECATED (0.2): config snapshots moved to the cfg KV
 // bucket; extensions recover via KV watch. Kept for external callers.
-func ChConfigGet(extID string) string { return "abc.config.get." + extID }
-func ChConfigWildcard() string        { return "abc.config.get.>" }
+func ChConfigGet(tenant, extID string) string {
+	return TenantPrefix(tenant) + "config.get." + extID
+}
+func ChConfigWildcard(tenant string) string {
+	return TenantPrefix(tenant) + "config.get.>"
+}
 
-// ConfigExtIDFromGetChannel extracts the extId from abc.config.get.<extId>.
+// ConfigExtIDFromGetChannel extracts the extId from abc.<tenant>.config.get.<extId>.
 func ConfigExtIDFromGetChannel(ch string) string {
-	return strings.TrimPrefix(ch, "abc.config.get.")
+	const p = ".config.get."
+	if i := strings.LastIndex(ch, p); i >= 0 {
+		return ch[i+len(p):]
+	}
+	return ch
 }
 
 // ConfigKVBucket mirrors applied config values for persistence (caps.kv).

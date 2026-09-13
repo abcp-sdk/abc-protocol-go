@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,8 +46,8 @@ type ToolSpec struct {
 	InputSchema  map[string]any
 	// RequiredConfig declares the config names this tool requires to run (a tool
 	// may share a required config with sibling tools). Absent = no config gating.
-	RequiredConfig  []string
-	Execute func(ctx context.Context, args map[string]any, callID, sessionName string) (ToolResultData, error)
+	RequiredConfig []string
+	Execute        func(ctx context.Context, args map[string]any, callID, sessionName, tenant string) (ToolResultData, error)
 }
 
 // VariableSpec describes one template variable and its lazy resolver.
@@ -54,7 +55,7 @@ type VariableSpec struct {
 	Description  string
 	Descriptions map[string]string
 	Scope        string // "global" | "session"
-	Resolve      func(ctx context.Context, sessionName string) (string, error)
+	Resolve      func(ctx context.Context, sessionName, tenant string) (string, error)
 }
 
 // Config describes an extension.
@@ -77,7 +78,7 @@ type Config struct {
 	// OnInterrupt is called after an interrupt signal cancelled the
 	// session's in-flight calls. When nil, interrupts fall back to
 	// OnEventHook(ctx, "interrupt", ...).
-	OnInterrupt func(ctx context.Context, sessionName, reason string)
+	OnInterrupt func(ctx context.Context, sessionName, reason, tenant string)
 }
 
 // HookSchemas maps hook name -> JSON schema (subset) for call arguments and
@@ -151,20 +152,20 @@ func validateHookSchema(schema map[string]any, value any, path string) string {
 
 // OnLifecycleFunc receives session lifecycle events. Returning an error is
 // logged by the SDK and otherwise ignored (lifecycle is best-effort).
-type OnLifecycleFunc func(ctx context.Context, ev abcprotocol.LifecycleEvent) error
+type OnLifecycleFunc func(ctx context.Context, ev abcprotocol.LifecycleEvent, tenant string) error
 
 // OnCallHook is the sync call-hook handler.
-type OnCallHook func(ctx context.Context, hook, sessionName string, args map[string]any) (abcprotocol.HookResponse, error)
+type OnCallHook func(ctx context.Context, hook, sessionName string, args map[string]any, tenant string) (abcprotocol.HookResponse, error)
 
 // OnEventHook is the async event-hook handler.
-type OnEventHook func(ctx context.Context, hook, sessionName string, payload any) error
+type OnEventHook func(ctx context.Context, hook, sessionName string, payload any, tenant string) error
 
 type manifestTool = struct {
-	RequiredConfig *[]string              `json:"required_config,omitempty"`
-	Description  string                  `json:"description"`
-	Descriptions *map[string]string      `json:"descriptions,omitempty"`
-	InputSchema  *map[string]interface{} `json:"input_schema,omitempty"`
-	Name         string                  `json:"name"`
+	RequiredConfig *[]string               `json:"required_config,omitempty"`
+	Description    string                  `json:"description"`
+	Descriptions   *map[string]string      `json:"descriptions,omitempty"`
+	InputSchema    *map[string]interface{} `json:"input_schema,omitempty"`
+	Name           string                  `json:"name"`
 }
 
 // manifestVariables mirrors the Prompt.variables type in types.gen.go so we
@@ -369,7 +370,7 @@ func (e *Extension) Close() error {
 
 // abcprotocolFeatures is the cooperative feature set this SDK build speaks —
 // advertised on the discovery manifest so agents can degrade gracefully.
-var abcprotocolFeatures = []string{"dlq", "config-kv", "presence", "kv-escaping", "interrupt-abort", "progress"}
+var abcprotocolFeatures = []string{"dlq", "config-kv", "presence", "kv-escaping", "interrupt-abort", "progress", "multitenant"}
 
 // PresenceBucket carries extension liveness: key = extId, value = the
 // discovery manifest, TTL = PresenceTTL refreshed every PresenceInterval.
@@ -400,9 +401,9 @@ func (e *Extension) startPresence(ctx context.Context) {
 }
 
 // ReportProgress reports in-flight progress for a tool call.
-func (e *Extension) ReportProgress(ctx context.Context, callID string, progress abcprotocol.ToolProgress) error {
+func (e *Extension) ReportProgress(ctx context.Context, tenant, callID string, progress abcprotocol.ToolProgress) error {
 	progress.CallId = callID
-	return e.b.Publish(ctx, protocol.ChToolProgress(callID), progress, "")
+	return e.b.Publish(ctx, protocol.ChToolProgress(tenant, callID), progress, bus.PublishOpts{Tenant: tenant})
 }
 
 func (e *Extension) serveDiscovery(ctx context.Context) error {
@@ -418,7 +419,7 @@ func (e *Extension) serveDiscovery(ctx context.Context) error {
 				return
 			}
 			if env.ReplyTo != nil {
-				_ = e.b.Publish(ctx, *env.ReplyTo, e.manifest, "")
+				_ = e.b.Publish(ctx, *env.ReplyTo, e.manifest, bus.PublishOpts{Tenant: protocol.GlobalTenant})
 			}
 		}
 	}()
@@ -427,7 +428,7 @@ func (e *Extension) serveDiscovery(ctx context.Context) error {
 
 func (e *Extension) serveTools(ctx context.Context) error {
 	for name, spec := range e.cfg.Tools {
-		ch := protocol.ChToolCall(e.cfg.ID, name)
+		ch := "abc.*.tool.call." + e.cfg.ID + "." + name
 		sub, err := e.b.Subscribe(ctx, ch, bus.SubscribeOpts{Queue: e.cfg.ID})
 		if err != nil {
 			return err
@@ -467,14 +468,18 @@ func (e *Extension) handleToolCall(ctx context.Context, name string, spec ToolSp
 	if env.SessionName != nil {
 		sessionName = *env.SessionName
 	}
+	tenant := env.Tenant
+	if tenant == "" {
+		tenant = protocol.SubjectTenant(env.Ch)
+	}
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if sessionName != "" {
-		e.trackInflight(sessionName, call.CallId, cancel)
+		e.trackInflight(tenant, sessionName, call.CallId, cancel)
 	}
 	res := abcprotocol.ToolResult{CallId: call.CallId, Tool: name}
-	data, err := spec.Execute(callCtx, call.Arguments, call.CallId, sessionName)
-	e.untrackInflight(sessionName, call.CallId)
+	data, err := spec.Execute(callCtx, call.Arguments, call.CallId, sessionName, tenant)
+	e.untrackInflight(tenant, sessionName, call.CallId)
 	if err != nil {
 		code := abcprotocol.ToolResultErrorCodeInternal
 		var te *TypedError
@@ -489,7 +494,7 @@ func (e *Extension) handleToolCall(ctx context.Context, name string, spec ToolSp
 	} else {
 		if len(data.Content) > offloadThreshold {
 			obj := call.CallId + ".data"
-			_ = e.b.ObjectPut(ctx, obj, []byte(data.Content))
+			_ = e.b.ObjectPut(ctx, protocol.TenantObjectName(tenant, obj), []byte(data.Content))
 			ct := "text/plain"
 			res.Object = &struct {
 				ContentType *string `json:"content_type,omitempty"`
@@ -513,12 +518,12 @@ func (e *Extension) handleToolCall(ctx context.Context, name string, spec ToolSp
 			}{ContentType: data.Object.ContentType, Id: data.Object.Id}
 		}
 	}
-	_ = e.b.Publish(context.Background(), replyTo, res, "")
+	_ = e.b.Publish(context.Background(), replyTo, res, bus.PublishOpts{Tenant: tenant})
 }
 
 func (e *Extension) serveVariables(ctx context.Context) error {
 	for name, spec := range e.cfg.Variables {
-		ch := protocol.ChVariable(e.cfg.ID, name)
+		ch := "abc.*.var." + e.cfg.ID + "." + name
 		sub, err := e.b.Subscribe(ctx, ch, bus.SubscribeOpts{Queue: e.cfg.ID})
 		if err != nil {
 			return err
@@ -533,11 +538,15 @@ func (e *Extension) serveVariables(ctx context.Context) error {
 				if env.ReplyTo == nil || spec.Resolve == nil {
 					continue
 				}
-				v, err := spec.Resolve(ctx, deref(env.SessionName))
+				tenant := env.Tenant
+				if tenant == "" {
+					tenant = protocol.SubjectTenant(env.Ch)
+				}
+				v, err := spec.Resolve(ctx, deref(env.SessionName), tenant)
 				if err != nil {
 					continue
 				}
-				_ = e.b.Publish(ctx, *env.ReplyTo, abcprotocol.ExtensionVariableValue{Name: name, Value: v}, "")
+				_ = e.b.Publish(ctx, *env.ReplyTo, abcprotocol.ExtensionVariableValue{Name: name, Value: v}, bus.PublishOpts{Tenant: tenant})
 			}
 		}(name, spec, sub)
 	}
@@ -546,7 +555,7 @@ func (e *Extension) serveVariables(ctx context.Context) error {
 
 func (e *Extension) serveCallHooks(ctx context.Context) error {
 	for _, hook := range e.cfg.CallHooks {
-		ch := protocol.ChHookCall(e.cfg.ID, hook)
+		ch := "abc.*.hook.call." + e.cfg.ID + "." + hook
 		sub, err := e.b.Subscribe(ctx, ch, bus.SubscribeOpts{Queue: e.cfg.ID})
 		if err != nil {
 			return err
@@ -567,6 +576,10 @@ func (e *Extension) serveCallHooks(ctx context.Context) error {
 				if sessionName == "" {
 					sessionName = deref(env.SessionName)
 				}
+				tenant := env.Tenant
+				if tenant == "" {
+					tenant = protocol.SubjectTenant(env.Ch)
+				}
 				var res abcprotocol.HookResponse
 				var args map[string]any
 				if call.Arguments != nil {
@@ -583,7 +596,7 @@ func (e *Extension) serveCallHooks(ctx context.Context) error {
 						Message string                            `json:"message"`
 					}{Code: abcprotocol.HookResponseErrorCodeNotFound, Message: "no handler for hook " + hook}}
 				} else {
-					r, err := e.cfg.OnCallHook(ctx, hook, sessionName, args)
+					r, err := e.cfg.OnCallHook(ctx, hook, sessionName, args, tenant)
 					if err != nil {
 						res = abcprotocol.HookResponse{Ok: false, Error: &struct {
 							Code    abcprotocol.HookResponseErrorCode `json:"code"`
@@ -593,7 +606,7 @@ func (e *Extension) serveCallHooks(ctx context.Context) error {
 						res = r
 					}
 				}
-				_ = e.b.Publish(ctx, *env.ReplyTo, res, "")
+				_ = e.b.Publish(ctx, *env.ReplyTo, res, bus.PublishOpts{Tenant: tenant})
 			}
 		}(hook, sub)
 	}
@@ -602,7 +615,7 @@ func (e *Extension) serveCallHooks(ctx context.Context) error {
 
 func (e *Extension) serveEventHooks(ctx context.Context) error {
 	for _, hook := range e.cfg.EventHooks {
-		ch := protocol.ChHookEvent(hook)
+		ch := "abc.*.hook.event." + hook
 		sub, err := e.b.Subscribe(ctx, ch, bus.SubscribeOpts{Queue: e.cfg.ID})
 		if err != nil {
 			return err
@@ -620,11 +633,15 @@ func (e *Extension) serveEventHooks(ctx context.Context) error {
 				if sessionName == "" {
 					sessionName = deref(env.SessionName)
 				}
+				tenant := env.Tenant
+				if tenant == "" {
+					tenant = protocol.SubjectTenant(env.Ch)
+				}
 				if msg := validateHookSchema(e.cfg.HookSchemas.Event[hook], ev.Payload, "payload"); msg != "" {
 					continue // invalid event payload: drop (best-effort)
 				}
 				if e.cfg.OnEventHook != nil {
-					_ = e.cfg.OnEventHook(ctx, hook, sessionName, ev.Payload)
+					_ = e.cfg.OnEventHook(ctx, hook, sessionName, ev.Payload, tenant)
 				}
 			}
 		}(hook, sub)
@@ -658,17 +675,18 @@ func (e *Extension) serveLifecycle(ctx context.Context) error {
 			if !protocol.Coerce(env.Payload, &ev) {
 				continue
 			}
-			kind := string(ev.Kind)
-			if env.Ch != protocol.ChLifecycle(kind) && !wanted[kind] {
-				continue
+			tenant := env.Tenant
+			if tenant == "" {
+				tenant = protocol.SubjectTenant(env.Ch)
 			}
+			kind := string(ev.Kind)
 			if !wanted[kind] {
 				continue
 			}
 			if kind == "deleted" {
-				_ = e.DeleteSessionVariables(ctx, ev.SessionName)
+				_ = e.DeleteSessionVariables(ctx, tenant, ev.SessionName)
 			}
-			if err := e.cfg.OnLifecycle(ctx, ev); err != nil {
+			if err := e.cfg.OnLifecycle(ctx, ev, tenant); err != nil {
 				// best-effort: lifecycle handlers log via their own logger
 				_ = err
 			}
@@ -678,7 +696,7 @@ func (e *Extension) serveLifecycle(ctx context.Context) error {
 }
 
 func (e *Extension) serveInterrupt(ctx context.Context) error {
-	sub, err := e.b.Subscribe(ctx, protocol.ChInterrupt(e.cfg.ID), bus.SubscribeOpts{Queue: e.cfg.ID})
+	sub, err := e.b.Subscribe(ctx, "abc.*.ctl.interrupt."+e.cfg.ID, bus.SubscribeOpts{Queue: e.cfg.ID})
 	if err != nil {
 		return err
 	}
@@ -695,18 +713,24 @@ func (e *Extension) serveInterrupt(ctx context.Context) error {
 			if sessionName == nil {
 				sessionName = env.SessionName
 			}
+			tenant := env.Tenant
+			if tenant == "" {
+				tenant = protocol.SubjectTenant(env.Ch)
+			}
 			// Abort in-flight tool calls first (real cancel semantics):
-			// a session-scoped signal cancels that session only; a signal
-			// without a session is a broadcast (cancel everything).
+			// a session-scoped signal cancels that tenant+session only; a
+			// signal without a session is a tenant broadcast.
 			if s := deref(sessionName); s != "" {
-				e.cancelInflight(s)
+				e.cancelInflight(tenant, s)
+			} else if tenant != "" {
+				e.cancelTenantInflight(tenant)
 			} else {
 				e.cancelAllInflight()
 			}
 			if e.cfg.OnInterrupt != nil {
-				e.cfg.OnInterrupt(ctx, deref(sessionName), deref(sig.Reason))
+				e.cfg.OnInterrupt(ctx, deref(sessionName), deref(sig.Reason), tenant)
 			} else if e.cfg.OnEventHook != nil {
-				_ = e.cfg.OnEventHook(ctx, "interrupt", deref(sessionName), sig.Reason)
+				_ = e.cfg.OnEventHook(ctx, "interrupt", deref(sessionName), sig.Reason, tenant)
 			}
 		}
 	}()
@@ -720,39 +744,65 @@ func deref(s *string) string {
 	return *s
 }
 
-// trackInflight registers a per-call cancel under its session.
-func (e *Extension) trackInflight(session, callID string, cancel context.CancelFunc) {
+// inflightKey namespaces a session by tenant so the same session name under
+// two tenants never collides.
+func inflightKey(tenant, session string) string { return tenant + "\x00" + session }
+
+// trackInflight registers a per-call cancel under its tenant+session.
+func (e *Extension) trackInflight(tenant, session, callID string, cancel context.CancelFunc) {
 	e.inflightMu.Lock()
 	defer e.inflightMu.Unlock()
-	if e.inflight[session] == nil {
-		e.inflight[session] = map[string]context.CancelFunc{}
+	key := inflightKey(tenant, session)
+	if e.inflight[key] == nil {
+		e.inflight[key] = map[string]context.CancelFunc{}
 	}
-	e.inflight[session][callID] = cancel
+	e.inflight[key][callID] = cancel
 }
 
 // untrackInflight drops the registration (call finished on its own).
-func (e *Extension) untrackInflight(session, callID string) {
+func (e *Extension) untrackInflight(tenant, session, callID string) {
 	if session == "" {
 		return
 	}
 	e.inflightMu.Lock()
 	defer e.inflightMu.Unlock()
-	if m := e.inflight[session]; m != nil {
+	key := inflightKey(tenant, session)
+	if m := e.inflight[key]; m != nil {
 		delete(m, callID)
 		if len(m) == 0 {
-			delete(e.inflight, session)
+			delete(e.inflight, key)
 		}
 	}
 }
 
-// cancelInflight aborts every in-flight call of one session.
-func (e *Extension) cancelInflight(session string) {
+// cancelInflight aborts every in-flight call of one tenant's session.
+func (e *Extension) cancelInflight(tenant, session string) {
+	key := inflightKey(tenant, session)
 	e.inflightMu.Lock()
-	m := e.inflight[session]
-	delete(e.inflight, session)
+	m := e.inflight[key]
+	delete(e.inflight, key)
 	e.inflightMu.Unlock()
 	for _, cancel := range m {
 		cancel()
+	}
+}
+
+// cancelTenantInflight aborts every in-flight call across one tenant.
+func (e *Extension) cancelTenantInflight(tenant string) {
+	prefix := tenant + "\x00"
+	e.inflightMu.Lock()
+	var cancels []context.CancelFunc
+	for k, m := range e.inflight {
+		if strings.HasPrefix(k, prefix) {
+			for _, c := range m {
+				cancels = append(cancels, c)
+			}
+			delete(e.inflight, k)
+		}
+	}
+	e.inflightMu.Unlock()
+	for _, c := range cancels {
+		c()
 	}
 }
 

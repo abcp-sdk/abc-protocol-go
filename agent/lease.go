@@ -30,11 +30,11 @@ const (
 // ClaimSession atomically claims the session's run lease. Returns the KV
 // revision on success (feed it to RenewSession), or (0, false) when another
 // holder owns it.
-func (a *Agent) ClaimSession(ctx context.Context, sessionName string, ttlMs int64) (int64, bool) {
+func (a *Agent) ClaimSession(ctx context.Context, tenant, sessionName string, ttlMs int64) (int64, bool) {
 	if ttlMs <= 0 {
 		ttlMs = LeaseTTLDefaultMs
 	}
-	rev, err := a.b.KVCreate(ctx, LeaseBucket, protocol.SessionToken(sessionName), "running", ttlMs)
+	rev, err := a.b.KVCreate(ctx, LeaseBucket, protocol.TenantKVKey(tenant, protocol.SessionToken(sessionName)), "running", ttlMs)
 	if err != nil || rev == 0 {
 		return 0, false
 	}
@@ -43,11 +43,11 @@ func (a *Agent) ClaimSession(ctx context.Context, sessionName string, ttlMs int6
 
 // RenewSession extends the lease via CAS. Returns the new revision, or
 // (0, false) when the lease was lost (expired and possibly re-claimed).
-func (a *Agent) RenewSession(ctx context.Context, sessionName string, revision int64, ttlMs int64) (int64, bool) {
+func (a *Agent) RenewSession(ctx context.Context, tenant, sessionName string, revision int64, ttlMs int64) (int64, bool) {
 	if ttlMs <= 0 {
 		ttlMs = LeaseTTLDefaultMs
 	}
-	rev, err := a.b.KVCas(ctx, LeaseBucket, protocol.SessionToken(sessionName), "running", revision)
+	rev, err := a.b.KVCas(ctx, LeaseBucket, protocol.TenantKVKey(tenant, protocol.SessionToken(sessionName)), "running", revision)
 	if err != nil || rev == 0 {
 		return 0, false
 	}
@@ -55,13 +55,13 @@ func (a *Agent) RenewSession(ctx context.Context, sessionName string, revision i
 }
 
 // ReleaseSession releases the run lease (back to idle).
-func (a *Agent) ReleaseSession(ctx context.Context, sessionName string) error {
-	return a.b.KVDelete(ctx, LeaseBucket, protocol.SessionToken(sessionName))
+func (a *Agent) ReleaseSession(ctx context.Context, tenant, sessionName string) error {
+	return a.b.KVDelete(ctx, LeaseBucket, protocol.TenantKVKey(tenant, protocol.SessionToken(sessionName)))
 }
 
 // IsSessionRunning reports whether the session's run lease is held.
-func (a *Agent) IsSessionRunning(ctx context.Context, sessionName string) bool {
-	v, err := a.b.KVGet(ctx, LeaseBucket, protocol.SessionToken(sessionName))
+func (a *Agent) IsSessionRunning(ctx context.Context, tenant, sessionName string) bool {
+	v, err := a.b.KVGet(ctx, LeaseBucket, protocol.TenantKVKey(tenant, protocol.SessionToken(sessionName)))
 	return err == nil && v != ""
 }
 
@@ -69,11 +69,11 @@ func (a *Agent) IsSessionRunning(ctx context.Context, sessionName string) bool {
 // lease. Returns (false, nil) when another replica already holds it. The
 // lease is renewed on a timer (TTL/3) and released after fn returns; ctx is
 // cancelled if the lease is lost mid-run (fn must observe ctx).
-func (a *Agent) WithSessionLease(ctx context.Context, sessionName string, fn func(ctx context.Context) error, ttlMs int64) (bool, error) {
+func (a *Agent) WithSessionLease(ctx context.Context, tenant, sessionName string, fn func(ctx context.Context) error, ttlMs int64) (bool, error) {
 	if ttlMs <= 0 {
 		ttlMs = LeaseTTLDefaultMs
 	}
-	revision, ok := a.ClaimSession(ctx, sessionName, ttlMs)
+	revision, ok := a.ClaimSession(ctx, tenant, sessionName, ttlMs)
 	if !ok {
 		return false, nil
 	}
@@ -90,7 +90,7 @@ func (a *Agent) WithSessionLease(ctx context.Context, sessionName string, fn fun
 			case <-runCtx.Done():
 				return
 			case <-t.C:
-				next, ok := a.RenewSession(ctx, sessionName, revision, ttlMs)
+				next, ok := a.RenewSession(ctx, tenant, sessionName, revision, ttlMs)
 				if !ok {
 					close(lost)
 					cancel()
@@ -102,7 +102,7 @@ func (a *Agent) WithSessionLease(ctx context.Context, sessionName string, fn fun
 	}()
 
 	err := fn(runCtx)
-	_ = a.ReleaseSession(context.WithoutCancel(ctx), sessionName)
+	_ = a.ReleaseSession(context.WithoutCancel(ctx), tenant, sessionName)
 	// If the lease was lost mid-run, surface it through the error channel.
 	if err == nil {
 		select {

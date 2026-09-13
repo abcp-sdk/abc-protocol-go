@@ -331,6 +331,7 @@ type ConfigSet struct {
 	Revision    int            `json:"revision"`
 	Scope       ConfigSetScope `json:"scope"`
 	SessionName *string        `json:"session_name,omitempty"`
+	Tenant      *string        `json:"tenant,omitempty"`
 
 	// Value Validated config value.
 	Value interface{} `json:"value,omitempty"`
@@ -355,7 +356,11 @@ type Envelope struct {
 	Payload     interface{} `json:"payload,omitempty"`
 	ReplyTo     *string     `json:"reply_to,omitempty"`
 	SessionName *string     `json:"session_name,omitempty"`
-	V           *int        `json:"v,omitempty"`
+
+	// Tenant Tenant the message belongs to. MUST equal the second subject
+	// segment for every data-plane channel.
+	Tenant string `json:"tenant"`
+	V      *int   `json:"v,omitempty"`
 }
 
 // EnvelopeKind defines model for Envelope.Kind.

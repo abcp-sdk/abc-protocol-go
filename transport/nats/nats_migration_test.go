@@ -41,7 +41,7 @@ func TestSelfMigration(t *testing.T) {
 	_ = js0.DeleteStream("ABC_DLQ")
 	if _, err := js0.AddStream(&natsGo.StreamConfig{
 		Name:     "ABC_MAILBOX",
-		Subjects: []string{"abc.mailbox.>", "abc.session.events.>"},
+		Subjects: []string{"abc.*.mailbox.>", "abc.*.session.events.>"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -55,14 +55,14 @@ func TestSelfMigration(t *testing.T) {
 
 	a := agent.New(bus)
 	ctx := context.Background()
-	if err := a.PublishMailbox(ctx, "sess-mig", "m1", map[string]any{"k": 1}); err != nil {
+	if err := a.PublishMailbox(ctx, "m", "sess-mig", "m1", map[string]any{"k": 1}); err != nil {
 		t.Fatal(err)
 	}
 	ext := extension.New(bus, extension.Config{ID: "mig-ext", Version: "1"})
-	if err := ext.PublishSessionEvent(ctx, "sess-mig", "mig-done", nil); err != nil {
+	if err := ext.PublishSessionEvent(ctx, "m", "sess-mig", "mig-done", nil); err != nil {
 		t.Fatal(err)
 	}
-	envs, err := bus.Replay(ctx, protocol.ChSessionEvents("sess-mig"))
+	envs, err := bus.Replay(ctx, protocol.ChSessionEvents("m", "sess-mig"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestReconcileStreams(t *testing.T) {
 	_ = js0.DeleteStream("ABC_DLQ")
 	if _, err := js0.AddStream(&natsGo.StreamConfig{
 		Name:     "ABC_MAILBOX",
-		Subjects: []string{"abc.mailbox.>", "abc.session.events.>"},
+		Subjects: []string{"abc.*.mailbox.>", "abc.*.session.events.>"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +111,11 @@ func TestReconcileStreams(t *testing.T) {
 
 	// Post-reconcile, the events stream holds exactly the events subject.
 	si, _ := bus.js.StreamInfo("ABC_EVENTS")
-	if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != "abc.session.events.>" {
+	if len(si.Config.Subjects) != 1 || si.Config.Subjects[0] != "abc.*.session.events.>" {
 		t.Fatalf("ABC_EVENTS subjects = %v", si.Config.Subjects)
 	}
 	mi, _ := bus.js.StreamInfo("ABC_MAILBOX")
-	if len(mi.Config.Subjects) != 1 || mi.Config.Subjects[0] != "abc.mailbox.>" {
+	if len(mi.Config.Subjects) != 1 || mi.Config.Subjects[0] != "abc.*.mailbox.>" {
 		t.Fatalf("ABC_MAILBOX subjects = %v", mi.Config.Subjects)
 	}
 }

@@ -21,6 +21,9 @@ import (
 	"github.com/abcp-sdk/abc-protocol-go/protocol"
 )
 
+// T is the tenant every conformance case runs under.
+const T = "t1"
+
 // Factory returns an agent-side and an extension-side bus over one shared
 // topology, plus a cleanup func.
 type Factory func(t *testing.T) (agentBus bus.Bus, extBus bus.Bus, cleanup func())
@@ -35,14 +38,14 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 		Tools: map[string]extension.ToolSpec{
 			"echo": {
 				Description: "echo content",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					msg, _ := args["msg"].(string)
 					return extension.ToolResultData{Content: "echo:" + msg}, nil
 				},
 			},
 			"hang": {
 				Description: "waits for ctx cancellation (interrupt semantics)",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					if h := hangStarted; h != nil {
 						h <- callID // deterministic "call landed" signal
 					}
@@ -56,14 +59,14 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 			},
 			"slow": {
 				Description: "sleeps before answering (request-timeout regression)",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					time.Sleep(2500 * time.Millisecond)
 					return extension.ToolResultData{Content: "woke"}, nil
 				},
 			},
 			"add": {
 				Description: "structured data result",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					a, _ := args["a"].(float64)
 					b, _ := args["b"].(float64)
 					return extension.ToolResultData{Data: map[string]any{"sum": a + b}}, nil
@@ -71,7 +74,7 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 			},
 			"big": {
 				Description: "returns >256KB content (object offload)",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					big := make([]byte, 300*1024)
 					for i := range big {
 						big[i] = 'x'
@@ -81,13 +84,13 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 			},
 			"session": {
 				Description: "echoes the session name it was called with",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					return extension.ToolResultData{Content: "session=" + session}, nil
 				},
 			},
 			"boom": {
 				Description: "always fails",
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					return extension.ToolResultData{}, &extension.TypedError{Code: abcprotocol.ToolResultErrorCodeBusiness, Message: "nope"}
 				},
 			},
@@ -95,7 +98,7 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 		Variables: map[string]extension.VariableSpec{
 			"base-url": {
 				Description: "the base url",
-				Resolve: func(ctx context.Context, session string) (string, error) {
+				Resolve: func(ctx context.Context, session, tenant string) (string, error) {
 					return "https://example.com/" + session, nil
 				},
 			},
@@ -133,11 +136,11 @@ func serveEchoExt(t *testing.T, extBus bus.Bus) *extension.Extension {
 			return nil
 		},
 		CallHooks: []string{"session.before_create"},
-		OnCallHook: func(ctx context.Context, hook, session string, args map[string]any) (abcprotocol.HookResponse, error) {
+		OnCallHook: func(ctx context.Context, hook, session string, args map[string]any, tenant string) (abcprotocol.HookResponse, error) {
 			return abcprotocol.HookResponse{Ok: true, Data: map[string]any{"session": session, "hook": hook}}, nil
 		},
 		EventHooks: []string{"session.created"},
-		OnEventHook: func(ctx context.Context, hook, session string, payload any) error {
+		OnEventHook: func(ctx context.Context, hook, session string, payload any, tenant string) error {
 			if extEvents != nil {
 				extEvents <- event{hook: hook, session: session, payload: payload}
 			}
@@ -239,7 +242,7 @@ func testToolContent(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(context.Background(), "sess-1", "conf-ext", "echo", "c1", map[string]any{"msg": "hi"})
+	tr, err := a.CallTool(context.Background(), T, "sess-1", "conf-ext", "echo", "c1", map[string]any{"msg": "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +258,7 @@ func testToolData(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(context.Background(), "sess-1", "conf-ext", "add", "c2", map[string]any{"a": 2.0, "b": 3.0})
+	tr, err := a.CallTool(context.Background(), T, "sess-1", "conf-ext", "add", "c2", map[string]any{"a": 2.0, "b": 3.0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,14 +278,14 @@ func testToolObject(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(context.Background(), "sess-1", "conf-ext", "big", "c3", map[string]any{})
+	tr, err := a.CallTool(context.Background(), T, "sess-1", "conf-ext", "big", "c3", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tr.Object == nil {
 		t.Fatalf("expected object offload, got %+v", tr)
 	}
-	data, err := a.GetObject(context.Background(), tr.Object.Id)
+	data, err := a.GetObject(context.Background(), T, tr.Object.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +301,7 @@ func testToolError(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(context.Background(), "sess-1", "conf-ext", "boom", "c4", map[string]any{})
+	tr, err := a.CallTool(context.Background(), T, "sess-1", "conf-ext", "boom", "c4", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +320,7 @@ func testCallID(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(context.Background(), "sess-1", "conf-ext", "echo", "call-xyz", map[string]any{"msg": "1"})
+	tr, err := a.CallTool(context.Background(), T, "sess-1", "conf-ext", "echo", "call-xyz", map[string]any{"msg": "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +336,7 @@ func testSessionName(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(context.Background(), "sess-42", "conf-ext", "session", "c5", map[string]any{})
+	tr, err := a.CallTool(context.Background(), T, "sess-42", "conf-ext", "session", "c5", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +354,7 @@ func testUnknownTool(t *testing.T, newPair Factory) {
 	a := agent.New(agentBus)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := a.CallTool(ctx, "sess-1", "conf-ext", "missing", "c6", map[string]any{}); err == nil {
+	if _, err := a.CallTool(ctx, T, "sess-1", "conf-ext", "missing", "c6", map[string]any{}); err == nil {
 		t.Fatal("expected timeout/error for unknown tool")
 	}
 }
@@ -363,11 +366,11 @@ func testVariable(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	v, ok := a.ResolveVariable(context.Background(), "sess-1", "conf-ext", "base-url")
+	v, ok := a.ResolveVariable(context.Background(), T, "sess-1", "conf-ext", "base-url")
 	if !ok || v != "https://example.com/sess-1" {
 		t.Fatalf("variable = %q ok=%v", v, ok)
 	}
-	if _, ok := a.ResolveVariable(context.Background(), "sess-1", "conf-ext", "nope"); ok {
+	if _, ok := a.ResolveVariable(context.Background(), T, "sess-1", "conf-ext", "nope"); ok {
 		t.Fatal("missing variable should resolve null")
 	}
 }
@@ -379,7 +382,7 @@ func testCallHook(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	a := agent.New(agentBus)
-	hr, err := a.CallHook(context.Background(), "conf-ext", "session.before_create", "sess-h", map[string]any{"k": "v"})
+	hr, err := a.CallHook(context.Background(), T, "conf-ext", "session.before_create", "sess-h", map[string]any{"k": "v"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +402,7 @@ func testEventHook(t *testing.T, newPair Factory) {
 	defer func() { extEvents = nil }()
 
 	a := agent.New(agentBus)
-	if err := a.PublishEventHook(context.Background(), "session.created", "sess-ev", map[string]any{"x": 1}); err != nil {
+	if err := a.PublishEventHook(context.Background(), T, "session.created", "sess-ev", map[string]any{"x": 1}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -423,7 +426,7 @@ func testInterrupt(t *testing.T, newPair Factory) {
 	defer func() { extEvents = nil }()
 
 	a := agent.New(agentBus)
-	if err := a.Interrupt(context.Background(), "conf-ext"); err != nil {
+	if err := a.Interrupt(context.Background(), T, "conf-ext"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -443,13 +446,13 @@ func testProgress(t *testing.T, newPair Factory) {
 	defer ext.Close()
 
 	ctx := context.Background()
-	sub, err := agent.New(agentBus).SubscribeProgress(ctx, "c-progress")
+	sub, err := agent.New(agentBus).SubscribeProgress(ctx, T, "c-progress")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sub.Close()
 
-	if err := ext.ReportProgress(ctx, "c-progress", abcprotocol.ToolProgress{Phase: protocolPtr("sync"), Progress: protocolF32(0.5), Text: protocolPtr("half")}); err != nil {
+	if err := ext.ReportProgress(ctx, T, "c-progress", abcprotocol.ToolProgress{Phase: protocolPtr("sync"), Progress: protocolF32(0.5), Text: protocolPtr("half")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -510,7 +513,7 @@ func testMailbox(t *testing.T, newPair Factory) {
 	time.Sleep(100 * time.Millisecond)
 
 	session := "sess-mb-" + protocol.NewID()[:8]
-	if err := a.PublishMailbox(ctx, session, "user_prompt", map[string]any{"text": "hello"}); err != nil {
+	if err := a.PublishMailbox(ctx, T, session, "user_prompt", map[string]any{"text": "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	m, ok := awaitMailbox(received, session)
@@ -529,17 +532,17 @@ func testObjectStore(t *testing.T, newPair Factory) {
 	a := agent.New(agentBus)
 	ctx := context.Background()
 	payload := []byte("object-payload-123")
-	if err := a.PutObject(ctx, "test-obj", payload); err != nil {
+	if err := a.PutObject(ctx, T, "test-obj", payload); err != nil {
 		t.Fatal(err)
 	}
-	got, err := a.GetObject(ctx, "test-obj")
+	got, err := a.GetObject(ctx, T, "test-obj")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != string(payload) {
 		t.Fatalf("object = %q", got)
 	}
-	if missing, _ := a.GetObject(ctx, "absent-obj"); len(missing) != 0 {
+	if missing, _ := a.GetObject(ctx, T, "absent-obj"); len(missing) != 0 {
 		t.Fatalf("absent object = %q", missing)
 	}
 }
@@ -611,7 +614,7 @@ func testConfigSet(t *testing.T, newPair Factory) {
 	configEvents = make(chan configEvent, 8)
 	defer func() { configEvents = nil }()
 
-	if err := a.SetConfig(ctx, "conf-ext", "poll-interval", float64(5), "", nil, nil); err != nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "poll-interval", float64(5), "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -645,7 +648,7 @@ func testConfigRejected(t *testing.T, newPair Factory) {
 	// reject-me triggers OnConfigChange error in the fixture; undeclared on
 	// the manifest? No: it must be declared. The fixture declares it via a
 	// type json knob so the value validates but the callback refuses.
-	err := a.SetConfig(ctx, "conf-ext", "reject-me", map[string]any{"x": 1}, "", nil, nil)
+	err := a.SetConfig(ctx, T, "conf-ext", "reject-me", map[string]any{"x": 1}, "", nil, nil)
 	if err == nil {
 		t.Fatal("expected rejection")
 	}
@@ -671,15 +674,15 @@ func testConfigValidation(t *testing.T, newPair Factory) {
 	}
 
 	// wrong type
-	if err := a.SetConfig(ctx, "conf-ext", "poll-interval", "fast", "", nil, nil); err == nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "poll-interval", "fast", "", nil, nil); err == nil {
 		t.Fatal("expected invalid_argument for wrong type")
 	}
 	// enum violation
-	if err := a.SetConfig(ctx, "conf-ext", "mode", "turbo", "", nil, nil); err == nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "mode", "turbo", "", nil, nil); err == nil {
 		t.Fatal("expected invalid_argument for enum violation")
 	}
 	// undeclared name
-	if err := a.SetConfig(ctx, "conf-ext", "nope", float64(1), "", nil, nil); err == nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "nope", float64(1), "", nil, nil); err == nil {
 		t.Fatal("expected not_found for undeclared config")
 	}
 }
@@ -702,7 +705,7 @@ func testConfigSession(t *testing.T, newPair Factory) {
 	configEvents = make(chan configEvent, 8)
 	defer func() { configEvents = nil }()
 
-	if err := a.SetConfig(ctx, "conf-ext", "session-limit", float64(99), "sess-a", nil, nil); err != nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "session-limit", float64(99), "sess-a", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -715,7 +718,7 @@ func testConfigSession(t *testing.T, newPair Factory) {
 	}
 
 	// Drop overrides; extension keeps running.
-	a.DropSessionConfig(ctx, "conf-ext", "sess-a")
+	a.DropSessionConfig(ctx, T, "conf-ext", "sess-a")
 }
 
 func testConfigSnapshot(t *testing.T, newPair Factory) {
@@ -732,7 +735,7 @@ func testConfigSnapshot(t *testing.T, newPair Factory) {
 	if err := a.ServeConfig(true); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.SetConfig(ctx, "conf-ext", "poll-interval", float64(7), "", nil, nil); err != nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "poll-interval", float64(7), "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -760,7 +763,7 @@ func serveLateExt(t *testing.T, bus bus.Bus, wantGlobal map[string]any) *extensi
 	if err := ext.Serve(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got := ext.GetConfig("poll-interval", "")
+	got := ext.GetConfig(T, "poll-interval", "")
 	if got != wantGlobal["poll-interval"] {
 		t.Fatalf("snapshot apply: got %v want %v", got, wantGlobal["poll-interval"])
 	}
@@ -788,7 +791,7 @@ func testConfigNoAck(t *testing.T, newPair Factory) {
 	defer func() { configEvents = nil }()
 
 	noAck := false
-	if err := a.SetConfig(ctx, "conf-ext", "poll-interval", float64(3), "", nil, &noAck); err != nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "poll-interval", float64(3), "", nil, &noAck); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -813,12 +816,15 @@ func testLifecycle(t *testing.T, newPair Factory) {
 		ID:      "lc-ext",
 		Version: "1.0",
 		Variables: map[string]extension.VariableSpec{
-			"ws": {Scope: "session", Resolve: func(ctx context.Context, session string) (string, error) {
+			"ws": {Scope: "session", Resolve: func(ctx context.Context, session, tenant string) (string, error) {
 				return "x", nil
 			}},
 		},
-		Lifecycle:   []string{"created", "forked", "renamed", "deleted"},
-		OnLifecycle: func(ctx context.Context, ev abcprotocol.LifecycleEvent) error { received <- ev; return nil },
+		Lifecycle: []string{"created", "forked", "renamed", "deleted"},
+		OnLifecycle: func(ctx context.Context, ev abcprotocol.LifecycleEvent, tenant string) error {
+			received <- ev
+			return nil
+		},
 	})
 	ctx := context.Background()
 	if err := ext.Serve(ctx); err != nil {
@@ -829,7 +835,7 @@ func testLifecycle(t *testing.T, newPair Factory) {
 
 	a := agent.New(agentBus)
 	for _, kind := range []string{"created", "forked", "renamed", "deleted"} {
-		if err := a.PublishLifecycleEvent(ctx, kind, "sess-lc", map[string]any{"k": kind}); err != nil {
+		if err := a.PublishLifecycleEvent(ctx, T, kind, "sess-lc", map[string]any{"k": kind}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -855,7 +861,7 @@ func testSessionEvents(t *testing.T, newPair Factory) {
 	// The agent side replays session events by consuming the durable inbox
 	// wildcard filtered to its session's events channel.
 	sub, err := agentBus.InboxConsume(context.Background(), bus.InboxConsumeOpts{
-		Subject: protocol.ChSessionEvents("sess-se"),
+		Subject: protocol.ChSessionEvents(T, "sess-se"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -863,7 +869,7 @@ func testSessionEvents(t *testing.T, newPair Factory) {
 	defer sub.Close()
 	time.Sleep(100 * time.Millisecond)
 
-	if err := ext.PublishSessionEvent(context.Background(), "sess-se", "todos-updated", map[string]any{"count": 3}); err != nil {
+	if err := ext.PublishSessionEvent(context.Background(), T, "sess-se", "todos-updated", map[string]any{"count": 3}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -913,7 +919,7 @@ func testExtMailbox(t *testing.T, newPair Factory) {
 	time.Sleep(100 * time.Millisecond)
 
 	session := "sess-xm-" + protocol.NewID()[:8]
-	if err := ext.PublishMailboxEvent(ctx, session, "event", map[string]any{"done": true}); err != nil {
+	if err := ext.PublishMailboxEvent(ctx, T, session, "event", map[string]any{"done": true}); err != nil {
 		t.Fatal(err)
 	}
 	m, ok := awaitMailbox(got, session)
@@ -937,7 +943,7 @@ func testVariableKVFirst(t *testing.T, newPair Factory) {
 		ID:      "var-ext",
 		Version: "1.0",
 		Variables: map[string]extension.VariableSpec{
-			"ws": {Scope: "session", Resolve: func(ctx context.Context, session string) (string, error) {
+			"ws": {Scope: "session", Resolve: func(ctx context.Context, session, tenant string) (string, error) {
 				resolves++
 				return "ws-" + session, nil
 			}},
@@ -952,16 +958,16 @@ func testVariableKVFirst(t *testing.T, newPair Factory) {
 
 	a := agent.New(agentBus)
 	// First resolve: miss → lazy request (and the ext caches via SetSessionVariable).
-	v, ok := a.ResolveVariable(ctx, session, "var-ext", "ws")
+	v, ok := a.ResolveVariable(ctx, T, session, "var-ext", "ws")
 	if !ok || v != "ws-"+session {
 		t.Fatalf("resolve = %q %v", v, ok)
 	}
 	// Simulate the extension write-back that production resolvers do.
-	if err := ext.SetSessionVariable(ctx, session, "ws", "ws-cached"); err != nil {
+	if err := ext.SetSessionVariable(ctx, T, session, "ws", "ws-cached"); err != nil {
 		t.Fatal(err)
 	}
 	// Second resolve: KV hit, no lazy request.
-	v, ok = a.ResolveVariable(ctx, session, "var-ext", "ws")
+	v, ok = a.ResolveVariable(ctx, T, session, "var-ext", "ws")
 	if !ok || v != "ws-cached" {
 		t.Fatalf("cached resolve = %q %v", v, ok)
 	}
@@ -983,8 +989,8 @@ func testSessionLease(t *testing.T, newPair Factory) {
 	session := "sess-lease-" + protocol.NewID()[:8]
 
 	// Mutual exclusion: exactly one of two replicas claims.
-	rev1, ok1 := a1.ClaimSession(ctx, session, 1000)
-	rev2, ok2 := a2.ClaimSession(ctx, session, 1000)
+	rev1, ok1 := a1.ClaimSession(ctx, T, session, 1000)
+	rev2, ok2 := a2.ClaimSession(ctx, T, session, 1000)
 	if !ok1 && !ok2 {
 		t.Fatal("neither replica claimed the lease")
 	}
@@ -995,38 +1001,38 @@ func testSessionLease(t *testing.T, newPair Factory) {
 	if ok2 {
 		holder, rev = a2, rev2
 	}
-	if !holder.IsSessionRunning(ctx, session) {
+	if !holder.IsSessionRunning(ctx, T, session) {
 		t.Fatal("lease key should exist while held")
 	}
 
 	// Renew with the right revision succeeds and bumps it.
-	next, ok := holder.RenewSession(ctx, session, rev, 1000)
+	next, ok := holder.RenewSession(ctx, T, session, rev, 1000)
 	if !ok || next <= rev {
 		t.Fatalf("renew = %d %v (rev %d)", next, ok, rev)
 	}
 	// Renew with a stale revision loses.
-	if stale, ok := holder.RenewSession(ctx, session, rev, 1000); ok {
+	if stale, ok := holder.RenewSession(ctx, T, session, rev, 1000); ok {
 		t.Fatalf("stale renew unexpectedly succeeded: %d", stale)
 	}
 	rev = next
 
 	// Release → claim by the other replica succeeds.
-	if err := holder.ReleaseSession(ctx, session); err != nil {
+	if err := holder.ReleaseSession(ctx, T, session); err != nil {
 		t.Fatal(err)
 	}
-	if holder.IsSessionRunning(ctx, session) {
+	if holder.IsSessionRunning(ctx, T, session) {
 		t.Fatal("lease should be free after release")
 	}
-	if _, ok := a2.ClaimSession(ctx, session, 1000); !ok {
+	if _, ok := a2.ClaimSession(ctx, T, session, 1000); !ok {
 		t.Fatal("claim after release should succeed")
 	}
-	_ = a2.ReleaseSession(ctx, session)
+	_ = a2.ReleaseSession(ctx, T, session)
 
 	// WithSessionLease: second replica is refused while the first runs.
 	done := make(chan error, 1)
 	go func() {
-		_, err := a1.WithSessionLease(ctx, session, func(ctx context.Context) error {
-			acquired, err := a2.WithSessionLease(ctx, session, func(context.Context) error {
+		_, err := a1.WithSessionLease(ctx, T, session, func(ctx context.Context) error {
+			acquired, err := a2.WithSessionLease(ctx, T, session, func(context.Context) error {
 				return nil
 			}, 1000)
 			if acquired {
@@ -1058,7 +1064,7 @@ func testSlowTool(t *testing.T, newPair Factory) {
 	a := agent.New(agentBus)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	tr, err := a.CallTool(ctx, "sess-1", "conf-ext", "slow", "slow-1", map[string]any{})
+	tr, err := a.CallTool(ctx, T, "sess-1", "conf-ext", "slow", "slow-1", map[string]any{})
 	if err != nil {
 		t.Fatalf("slow tool: %v", err)
 	}
@@ -1092,7 +1098,7 @@ func testInterruptCancels(t *testing.T, newPair Factory) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			tr, err := a.CallTool(ctx, session, "conf-ext", "hang", callID, map[string]any{})
+			tr, err := a.CallTool(ctx, T, session, "conf-ext", "hang", callID, map[string]any{})
 			ch <- callOutcome{tr: tr, err: err}
 		}()
 		return ch
@@ -1112,7 +1118,7 @@ func testInterruptCancels(t *testing.T, newPair Factory) {
 		}
 	}
 
-	if err := a.InterruptSession(context.Background(), "conf-ext", "sess-int", "test"); err != nil {
+	if err := a.InterruptSession(context.Background(), T, "conf-ext", "sess-int", "test"); err != nil {
 		t.Fatalf("interrupt session: %v", err)
 	}
 	select {
@@ -1130,7 +1136,7 @@ func testInterruptCancels(t *testing.T, newPair Factory) {
 	}
 
 	// broadcast interrupt reaches the remaining session
-	if err := a.Interrupt(context.Background(), "conf-ext"); err != nil {
+	if err := a.Interrupt(context.Background(), T, "conf-ext"); err != nil {
 		t.Fatalf("interrupt broadcast: %v", err)
 	}
 	select {
@@ -1154,9 +1160,9 @@ func testTermDLQ(t *testing.T, newPair Factory) {
 
 	sess := "sess-dlq"
 	tag := "poison-" + protocol.NewID()[:6]
-	_ = a.PublishMailbox(ctx, sess, tag, map[string]any{"bad": true})
-	_ = a.PublishMailbox(ctx, sess, "healthy-"+tag, map[string]any{"ok": true})
-	_ = a.PublishMailbox(ctx, sess, "discard-"+tag, map[string]any{"gone": true})
+	_ = a.PublishMailbox(ctx, T, sess, tag, map[string]any{"bad": true})
+	_ = a.PublishMailbox(ctx, T, sess, "healthy-"+tag, map[string]any{"ok": true})
+	_ = a.PublishMailbox(ctx, T, sess, "discard-"+tag, map[string]any{"gone": true})
 
 	var once sync.Once
 	done := make(chan struct{})
@@ -1232,7 +1238,7 @@ func testOnInterrupt(t *testing.T, newPair Factory) {
 	ext := extension.New(extBus, extension.Config{
 		ID: "conf-ext", Version: "1.0",
 		Tools: map[string]extension.ToolSpec{
-			"hang": {Description: "hang", Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+			"hang": {Description: "hang", Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 				select {
 				case <-ctx.Done():
 					return extension.ToolResultData{}, fmt.Errorf("interrupted")
@@ -1241,13 +1247,13 @@ func testOnInterrupt(t *testing.T, newPair Factory) {
 				}
 			}},
 		},
-		OnInterrupt: func(ctx context.Context, session, reason string) {
+		OnInterrupt: func(ctx context.Context, session, reason, tenant string) {
 			select {
 			case got <- session + "|" + reason:
 			default:
 			}
 		},
-		OnEventHook: func(ctx context.Context, hook, session string, payload any) error {
+		OnEventHook: func(ctx context.Context, hook, session string, payload any, tenant string) error {
 			select {
 			case hooked <- hook:
 			default:
@@ -1263,11 +1269,11 @@ func testOnInterrupt(t *testing.T, newPair Factory) {
 	a := agent.New(agentBus)
 	done := make(chan error, 1)
 	go func() {
-		_, err := a.CallTool(ctx0, "sess-cb", "conf-ext", "hang", "cb-1", map[string]any{})
+		_, err := a.CallTool(ctx0, T, "sess-cb", "conf-ext", "hang", "cb-1", map[string]any{})
 		done <- err
 	}()
 	time.Sleep(500 * time.Millisecond)
-	if err := a.InterruptSession(ctx0, "conf-ext", "sess-cb", "because"); err != nil {
+	if err := a.InterruptSession(ctx0, T, "conf-ext", "sess-cb", "because"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1353,7 +1359,7 @@ func testConfigKVRecovery(t *testing.T, newPair Factory) {
 	if err := json.Unmarshal([]byte(`{"id":"conf-ext","version":"1","config":[{"name":"recovered","type":"string"}]}`), &m); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.SetConfig(ctx, "conf-ext", "recovered", "hello-kv", "", &m, nil); err != nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "recovered", "hello-kv", "", &m, nil); err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
 
@@ -1368,12 +1374,12 @@ func testConfigKVRecovery(t *testing.T, newPair Factory) {
 	defer ext.Close()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := ext.GetConfig("recovered", ""); got == "hello-kv" {
+		if got := ext.GetConfig(T, "recovered", ""); got == "hello-kv" {
 			return // pass
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("config not recovered from KV; got %q", ext.GetConfig("recovered", ""))
+	t.Fatalf("config not recovered from KV; got %q", ext.GetConfig(T, "recovered", ""))
 }
 
 // testPresence pins the liveness model: serving extensions appear in the
@@ -1421,7 +1427,7 @@ func testConfigDotSession(t *testing.T, newPair Factory) {
 		t.Fatal(err)
 	}
 	sess := "weird.session.name:main"
-	if err := a.SetConfig(ctx, "conf-ext", "dots", "escaped-ok", sess, &m, nil); err != nil {
+	if err := a.SetConfig(ctx, T, "conf-ext", "dots", "escaped-ok", sess, &m, nil); err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
 
@@ -1435,12 +1441,12 @@ func testConfigDotSession(t *testing.T, newPair Factory) {
 	defer ext.Close()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := ext.GetConfig("dots", sess); got == "escaped-ok" {
+		if got := ext.GetConfig(T, "dots", sess); got == "escaped-ok" {
 			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("dot-session config not recovered; got %v", ext.GetConfig("dots", sess))
+	t.Fatalf("dot-session config not recovered; got %v", ext.GetConfig(T, "dots", sess))
 }
 
 // testPoisonEscalation pins the default-safety behavior: a handler that
@@ -1452,7 +1458,7 @@ func testPoisonEscalation(t *testing.T, newPair Factory) {
 	ctx := context.Background()
 	a := agent.New(agentBus)
 	tag := "always-fails-" + protocol.NewID()[:6]
-	_ = a.PublishMailbox(ctx, "sess-poison", tag, map[string]any{"n": 1})
+	_ = a.PublishMailbox(ctx, T, "sess-poison", tag, map[string]any{"n": 1})
 
 	deliveries := 0
 	done := make(chan int, 1)
@@ -1506,7 +1512,7 @@ func testRequeueDLQ(t *testing.T, newPair Factory) {
 	a := agent.New(agentBus)
 
 	id := protocol.NewID()
-	if err := agentBus.InboxPublish(ctx, protocol.ChMailbox("sess-rq"), abcprotocol.MailboxMessage{Id: id, Type: "requeue-me", Payload: map[string]any{"k": 1}}, bus.InboxPublishOpts{ID: id, SessionName: "sess-rq"}); err != nil {
+	if err := agentBus.InboxPublish(ctx, protocol.ChMailbox(T, "sess-rq"), abcprotocol.MailboxMessage{Id: id, Type: "requeue-me", Payload: map[string]any{"k": 1}}, bus.InboxPublishOpts{ID: id, SessionName: "sess-rq", Tenant: T}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1578,11 +1584,11 @@ func testHookSchema(t *testing.T, newPair Factory) {
 			Call:  map[string]map[string]any{"audit": {"type": "object", "required": []any{"who"}, "properties": map[string]any{"who": map[string]any{"type": "string"}}}},
 			Event: map[string]map[string]any{"notice": {"type": "object", "required": []any{"kind"}, "properties": map[string]any{"kind": map[string]any{"type": "string"}}}},
 		},
-		OnCallHook: func(ctx context.Context, hook, session string, args map[string]any) (abcprotocol.HookResponse, error) {
+		OnCallHook: func(ctx context.Context, hook, session string, args map[string]any, tenant string) (abcprotocol.HookResponse, error) {
 			badCall <- abcprotocol.HookResponse{Ok: true} // would only reach here with valid args
 			return abcprotocol.HookResponse{Ok: true}, nil
 		},
-		OnEventHook: func(ctx context.Context, hook, session string, payload any) error {
+		OnEventHook: func(ctx context.Context, hook, session string, payload any, tenant string) error {
 			badEvent <- "delivered"
 			return nil
 		},
@@ -1593,7 +1599,7 @@ func testHookSchema(t *testing.T, newPair Factory) {
 
 	a := agent.New(agentBus)
 	// bad call args: missing "who" -> in-band invalid_argument
-	r, err := a.CallHook(ctx, "conf-ext", "audit", "sess-h", map[string]any{"nope": true})
+	r, err := a.CallHook(ctx, T, "conf-ext", "audit", "sess-h", map[string]any{"nope": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1601,7 +1607,7 @@ func testHookSchema(t *testing.T, newPair Factory) {
 		t.Fatalf("bad call args: got ok=%v err=%+v", r.Ok, r.Error)
 	}
 	// bad event payload: missing "kind" -> dropped (no delivery)
-	if err := a.PublishEventHook(ctx, "notice", "sess-h", map[string]any{"unknown": 1}); err != nil {
+	if err := a.PublishEventHook(ctx, T, "notice", "sess-h", map[string]any{"unknown": 1}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1610,7 +1616,7 @@ func testHookSchema(t *testing.T, newPair Factory) {
 	case <-time.After(500 * time.Millisecond):
 	}
 	// valid payloads still flow
-	if err := a.PublishEventHook(ctx, "notice", "sess-h", map[string]any{"kind": "ok"}); err != nil {
+	if err := a.PublishEventHook(ctx, T, "notice", "sess-h", map[string]any{"kind": "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	select {

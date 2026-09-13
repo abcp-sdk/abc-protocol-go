@@ -18,8 +18,10 @@ type Identity struct {
 	Secret string
 }
 
-// Fields are the covered message fields, in signing order.
+// Fields are the covered message fields, in signing order (tenant included,
+// so a signature minted for one tenant cannot be replayed under another).
 type Fields struct {
+	Tenant  string
 	Ch      string
 	Kind    string
 	ID      string
@@ -40,7 +42,7 @@ func canonical(id string, f Fields) string {
 			payload = string(b)
 		}
 	}
-	return id + "\n" + f.Ch + "\n" + f.Kind + "\n" + f.ID + "\n" + payload
+	return id + "\n" + f.Tenant + "\n" + f.Ch + "\n" + f.Kind + "\n" + f.ID + "\n" + payload
 }
 
 func sign(identity Identity, f Fields) string {

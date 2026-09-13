@@ -39,7 +39,7 @@ func TestIdentityAuth(t *testing.T) {
 	ext := extension.New(extBus, extension.Config{
 		ID: "id-ext", Version: "1.0",
 		Tools: map[string]extension.ToolSpec{
-			"echo": {Description: "e", Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+			"echo": {Description: "e", Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 				return extension.ToolResultData{Content: "signed-pong"}, nil
 			}},
 		},
@@ -49,7 +49,7 @@ func TestIdentityAuth(t *testing.T) {
 
 	// signed request flows
 	a := agent.New(agentBus)
-	tr, err := a.CallTool(ctx, "sess-id", "id-ext", "echo", "c1", nil)
+	tr, err := a.CallTool(ctx, "t1", "sess-id", "id-ext", "echo", "c1", nil)
 	if err != nil {
 		t.Fatalf("signed call: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestIdentityAuth(t *testing.T) {
 		cctx, cancel := context.WithTimeout(ctx, 2000000000) // 2s
 		defer cancel()
 		ab := agent.New(plainBus)
-		_, e := ab.CallTool(cctx, "sess-id", "id-ext", "echo", "c2", nil)
+		_, e := ab.CallTool(cctx, "t1", "sess-id", "id-ext", "echo", "c2", nil)
 		return tr, e
 	}()
 	if err == nil {

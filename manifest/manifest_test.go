@@ -38,7 +38,7 @@ hooks:
 	cfg := m.BuildConfig(manifest.Bindings{
 		Handlers: map[string]extension.ToolSpec{
 			"echo": {
-				Execute: func(ctx context.Context, args map[string]any, callID, session string) (extension.ToolResultData, error) {
+				Execute: func(ctx context.Context, args map[string]any, callID, session, tenant string) (extension.ToolResultData, error) {
 					echoCalled = true
 					return extension.ToolResultData{}, nil
 				},

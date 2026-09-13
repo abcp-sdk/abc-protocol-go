@@ -30,6 +30,7 @@ type ToolResult struct {
 // MailboxMessageResolved is a delivered mailbox message.
 type MailboxMessageResolved struct {
 	ID          string
+	Tenant      string
 	SessionName string
 	Type        string
 	Payload     any
@@ -84,7 +85,7 @@ func (a *Agent) Discover(ctx context.Context, maxWaitMs int) ([]abcprotocol.Exte
 		a.presenceMu.Unlock()
 		return out, nil
 	}
-	replies, err := a.b.RequestMany(ctx, protocol.ChDiscover, map[string]any{}, bus.RequestOpts{MaxWaitMs: maxWaitMs})
+	replies, err := a.b.RequestMany(ctx, protocol.ChDiscover, map[string]any{}, bus.RequestOpts{MaxWaitMs: maxWaitMs, Tenant: protocol.GlobalTenant})
 	if err != nil {
 		return nil, err
 	}
@@ -136,10 +137,10 @@ func (a *Agent) ensurePresence(ctx context.Context) {
 	})
 }
 
-// CallTool invokes a tool and returns its single terminal result. The
-// sessionName rides the envelope's first-class session_name field.
-func (a *Agent) CallTool(ctx context.Context, sessionName, extID, tool, callID string, args map[string]any) (ToolResult, error) {
-	reply, err := a.b.Request(ctx, protocol.ChToolCall(extID, tool), abcprotocol.ToolCallEnvelope{CallId: callID, Arguments: args}, bus.RequestOpts{SessionName: sessionName})
+// CallTool invokes a tool and returns its single terminal result. The tenant
+// and sessionName ride the envelope's first-class fields.
+func (a *Agent) CallTool(ctx context.Context, tenant, sessionName, extID, tool, callID string, args map[string]any) (ToolResult, error) {
+	reply, err := a.b.Request(ctx, protocol.ChToolCall(tenant, extID, tool), abcprotocol.ToolCallEnvelope{CallId: callID, Arguments: args}, bus.RequestOpts{SessionName: sessionName, Tenant: tenant})
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -168,16 +169,16 @@ func (a *Agent) CallTool(ctx context.Context, sessionName, extID, tool, callID s
 // the vars bucket wins (extensions cache resolved values there); on a miss
 // the lazy resolver request carries session_name so session-scoped resolvers
 // work, and extensions typically write the result back to the KV cache.
-func (a *Agent) ResolveVariable(ctx context.Context, sessionName, provider, name string) (string, bool) {
-	cached, err := a.b.KVGet(ctx, protocol.VarsBucket, protocol.SessionVarKey(provider, sessionName, name))
+func (a *Agent) ResolveVariable(ctx context.Context, tenant, sessionName, provider, name string) (string, bool) {
+	cached, err := a.b.KVGet(ctx, protocol.VarsBucket, protocol.SessionVarKey(tenant, provider, sessionName, name))
 	if err == nil && cached != "" {
 		return cached, true
 	}
-	cachedGlobal, err := a.b.KVGet(ctx, protocol.VarsBucket, protocol.VarKey(provider, name))
+	cachedGlobal, err := a.b.KVGet(ctx, protocol.VarsBucket, protocol.VarKey(tenant, provider, name))
 	if err == nil && cachedGlobal != "" {
 		return cachedGlobal, true
 	}
-	reply, err := a.b.Request(ctx, protocol.ChVariable(provider, name), map[string]any{"name": name}, bus.RequestOpts{TimeoutMs: 2000, SessionName: sessionName})
+	reply, err := a.b.Request(ctx, protocol.ChVariable(tenant, provider, name), map[string]any{"name": name}, bus.RequestOpts{TimeoutMs: 2000, SessionName: sessionName, Tenant: tenant})
 	if err != nil {
 		return "", false
 	}
@@ -189,8 +190,8 @@ func (a *Agent) ResolveVariable(ctx context.Context, sessionName, provider, name
 }
 
 // CallHook fires a sync call-hook.
-func (a *Agent) CallHook(ctx context.Context, extID, hook, sessionName string, args map[string]any) (abcprotocol.HookResponse, error) {
-	reply, err := a.b.Request(ctx, protocol.ChHookCall(extID, hook), abcprotocol.HookCall{Hook: hook, SessionName: sessionName, Arguments: &args}, bus.RequestOpts{})
+func (a *Agent) CallHook(ctx context.Context, tenant, extID, hook, sessionName string, args map[string]any) (abcprotocol.HookResponse, error) {
+	reply, err := a.b.Request(ctx, protocol.ChHookCall(tenant, extID, hook), abcprotocol.HookCall{Hook: hook, SessionName: sessionName, Arguments: &args}, bus.RequestOpts{Tenant: tenant})
 	if err != nil {
 		return abcprotocol.HookResponse{}, err
 	}
@@ -204,17 +205,17 @@ func (a *Agent) CallHook(ctx context.Context, extID, hook, sessionName string, a
 // Interrupt asks an extension to interrupt in-flight work.
 // Interrupt signals the extension to abort ALL in-flight work (broadcast:
 // no session scoping). For one session use InterruptSession.
-func (a *Agent) Interrupt(ctx context.Context, extID string) error {
-	return a.b.Publish(ctx, protocol.ChInterrupt(extID), abcprotocol.InterruptSignal{}, "")
+func (a *Agent) Interrupt(ctx context.Context, tenant, extID string) error {
+	return a.b.Publish(ctx, protocol.ChInterrupt(tenant, extID), abcprotocol.InterruptSignal{}, bus.PublishOpts{Tenant: tenant})
 }
 
 // InterruptSession aborts only the in-flight tool calls of one session.
-func (a *Agent) InterruptSession(ctx context.Context, extID, sessionName string, reason ...string) error {
+func (a *Agent) InterruptSession(ctx context.Context, tenant, extID, sessionName string, reason ...string) error {
 	sig := abcprotocol.InterruptSignal{SessionName: &sessionName}
 	if len(reason) > 0 {
 		sig.Reason = &reason[0]
 	}
-	return a.b.Publish(ctx, protocol.ChInterrupt(extID), sig, "")
+	return a.b.Publish(ctx, protocol.ChInterrupt(tenant, extID), sig, bus.PublishOpts{Tenant: tenant})
 }
 
 // PublishLifecycleEvent announces a session lifecycle change on
@@ -222,7 +223,7 @@ func (a *Agent) InterruptSession(ctx context.Context, extID, sessionName string,
 // forked carries parent, renamed carries from/to (to == sessionName).
 // Extensions that declared the kind receive it; session-scoped config
 // overrides are cleaned up on "deleted".
-func (a *Agent) PublishLifecycleEvent(ctx context.Context, kind, sessionName string, payload any) error {
+func (a *Agent) PublishLifecycleEvent(ctx context.Context, tenant, kind, sessionName string, payload any) error {
 	ev := abcprotocol.LifecycleEvent{
 		Kind:        abcprotocol.LifecycleEventKind(kind),
 		SessionName: sessionName,
@@ -240,36 +241,36 @@ func (a *Agent) PublishLifecycleEvent(ctx context.Context, kind, sessionName str
 			}
 		}
 	}
-	if err := a.b.Publish(ctx, protocol.ChLifecycle(kind), ev, ""); err != nil {
+	if err := a.b.Publish(ctx, protocol.ChLifecycle(tenant, kind), ev, bus.PublishOpts{Tenant: tenant}); err != nil {
 		return err
 	}
 	if kind == "deleted" {
 		// Best-effort: drop this session's config overrides for every
 		// extension we know about (manifest cache), plus any cached vars.
 		for extID := range a.manifestCache {
-			a.DropSessionConfig(ctx, extID, sessionName)
+			a.DropSessionConfig(ctx, tenant, extID, sessionName)
 		}
 	}
 	return nil
 }
 
 // PublishEventHook fires an async event-hook.
-func (a *Agent) PublishEventHook(ctx context.Context, hook, sessionName string, payload any) error {
-	return a.b.Publish(ctx, protocol.ChHookEvent(hook), abcprotocol.HookEvent{Hook: hook, SessionName: sessionName, Payload: payload}, "")
+func (a *Agent) PublishEventHook(ctx context.Context, tenant, hook, sessionName string, payload any) error {
+	return a.b.Publish(ctx, protocol.ChHookEvent(tenant, hook), abcprotocol.HookEvent{Hook: hook, SessionName: sessionName, Payload: payload}, bus.PublishOpts{Tenant: tenant})
 }
 
 // SubscribeProgress subscribes to in-flight progress telemetry for a tool
 // call (one-way `pub` on abc.tool.progress.<callId>). Consumed by the
 // orchestration layer / UI, never fed into the LLM context.
-func (a *Agent) SubscribeProgress(ctx context.Context, callID string) (bus.Subscription, error) {
-	return a.b.Subscribe(ctx, protocol.ChToolProgress(callID), bus.SubscribeOpts{})
+func (a *Agent) SubscribeProgress(ctx context.Context, tenant, callID string) (bus.Subscription, error) {
+	return a.b.Subscribe(ctx, protocol.ChToolProgress(tenant, callID), bus.SubscribeOpts{})
 }
 
 // PublishMailbox drops a message into a session's durable mailbox. Type is
 // one of user_prompt / interrupt / event (free-form string on the wire).
-func (a *Agent) PublishMailbox(ctx context.Context, sessionName, typ string, payload any) error {
+func (a *Agent) PublishMailbox(ctx context.Context, tenant, sessionName, typ string, payload any) error {
 	id := protocol.NewID()
-	return a.b.InboxPublish(ctx, protocol.ChMailbox(sessionName), abcprotocol.MailboxMessage{Id: id, Type: typ, Payload: payload}, bus.InboxPublishOpts{ID: id, SessionName: sessionName})
+	return a.b.InboxPublish(ctx, protocol.ChMailbox(tenant, sessionName), abcprotocol.MailboxMessage{Id: id, Type: typ, Payload: payload}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
 }
 
 // DefaultMaxNaksBeforeTerm is the poison-message escalation threshold:
@@ -295,7 +296,7 @@ func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageR
 	if len(maxNaks) > 0 && maxNaks[0] > 0 {
 		limit = maxNaks[0]
 	}
-	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: protocol.MailboxWildcard + ">"})
+	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: protocol.MailboxWildcardAll + ">"})
 	if err != nil {
 		return nil, err
 	}
@@ -317,12 +318,16 @@ func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageR
 			if env.SessionName != nil {
 				sessionName = *env.SessionName
 			}
+			tenant := env.Tenant
+			if tenant == "" {
+				tenant = protocol.SubjectTenant(env.Ch)
+			}
 			var m abcprotocol.MailboxMessage
-			if sessionName == "" || env.Id == nil || *env.Id == "" || !protocol.Coerce(env.Payload, &m) {
+			if sessionName == "" || tenant == "" || env.Id == nil || *env.Id == "" || !protocol.Coerce(env.Payload, &m) {
 				msg.Ack()
 				continue
 			}
-			switch err := handler(MailboxMessageResolved{ID: m.Id, SessionName: sessionName, Type: m.Type, Payload: m.Payload}); {
+			switch err := handler(MailboxMessageResolved{ID: m.Id, Tenant: tenant, SessionName: sessionName, Type: m.Type, Payload: m.Payload}); {
 			case err == nil:
 				forget(m.Id)
 				msg.Ack()
@@ -358,7 +363,7 @@ func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageR
 // that a consumer Term()'d, kept in their original shape for inspection.
 // This is the ops surface for poison-message triage.
 func (a *Agent) ConsumeDLQ(ctx context.Context, handler func(MailboxMessageResolved) error) (func(), error) {
-	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: "abc.dlq.>"})
+	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: "abc.*.dlq.>"})
 	if err != nil {
 		return nil, err
 	}
@@ -373,12 +378,16 @@ func (a *Agent) ConsumeDLQ(ctx context.Context, handler func(MailboxMessageResol
 			if env.SessionName != nil {
 				sessionName = *env.SessionName
 			}
+			tenant := env.Tenant
+			if tenant == "" {
+				tenant = protocol.SubjectTenant(env.Ch)
+			}
 			var m abcprotocol.MailboxMessage
-			if sessionName == "" || env.Id == nil || !protocol.Coerce(env.Payload, &m) {
+			if sessionName == "" || tenant == "" || env.Id == nil || !protocol.Coerce(env.Payload, &m) {
 				msg.TermNoDLQ() // dead letters of dead letters help nobody
 				continue
 			}
-			if handler(MailboxMessageResolved{ID: m.Id, SessionName: sessionName, Type: m.Type, Payload: m.Payload}) != nil {
+			if handler(MailboxMessageResolved{ID: m.Id, Tenant: tenant, SessionName: sessionName, Type: m.Type, Payload: m.Payload}) != nil {
 				msg.Nak(5000)
 			} else {
 				msg.Ack()
@@ -393,7 +402,7 @@ func (a *Agent) ConsumeDLQ(ctx context.Context, handler func(MailboxMessageResol
 // dead-letter copy. This is the return path for triage: fix the consumer,
 // then requeue the parked payloads.
 func (a *Agent) RequeueDLQ(ctx context.Context, id string) (bool, error) {
-	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: "abc.dlq.>"})
+	sub, err := a.b.InboxConsume(ctx, bus.InboxConsumeOpts{Subject: "abc.*.dlq.>"})
 	if err != nil {
 		return false, err
 	}
@@ -416,14 +425,18 @@ func (a *Agent) RequeueDLQ(ctx context.Context, id string) (bool, error) {
 		if env.SessionName != nil {
 			sessionName = *env.SessionName
 		}
+		tenant := env.Tenant
+		if tenant == "" {
+			tenant = protocol.SubjectTenant(env.Ch)
+		}
 		var m abcprotocol.MailboxMessage
-		if sessionName == "" || !protocol.Coerce(env.Payload, &m) || m.Id != id {
+		if sessionName == "" || tenant == "" || !protocol.Coerce(env.Payload, &m) || m.Id != id {
 			// not ours: put it back in the DLQ after a short delay
 			msg.Nak(500)
 			continue
 		}
 		newID := protocol.NewID()
-		if err := a.b.InboxPublish(ctx, protocol.ChMailbox(sessionName), abcprotocol.MailboxMessage{Id: newID, Type: m.Type, Payload: m.Payload}, bus.InboxPublishOpts{ID: newID, SessionName: sessionName}); err != nil {
+		if err := a.b.InboxPublish(ctx, protocol.ChMailbox(tenant, sessionName), abcprotocol.MailboxMessage{Id: newID, Type: m.Type, Payload: m.Payload}, bus.InboxPublishOpts{ID: newID, SessionName: sessionName, Tenant: tenant}); err != nil {
 			msg.Nak(500)
 			return false, err
 		}
@@ -432,20 +445,20 @@ func (a *Agent) RequeueDLQ(ctx context.Context, id string) (bool, error) {
 	}
 }
 
-// PutObject / GetObject proxy object store.
-func (a *Agent) PutObject(ctx context.Context, name string, data []byte) error {
-	return a.b.ObjectPut(ctx, name, data)
+// PutObject / GetObject proxy the tenant-scoped object store.
+func (a *Agent) PutObject(ctx context.Context, tenant, name string, data []byte) error {
+	return a.b.ObjectPut(ctx, protocol.TenantObjectName(tenant, name), data)
 }
-func (a *Agent) GetObject(ctx context.Context, name string) ([]byte, error) {
-	return a.b.ObjectGet(ctx, name)
+func (a *Agent) GetObject(ctx context.Context, tenant, name string) ([]byte, error) {
+	return a.b.ObjectGet(ctx, protocol.TenantObjectName(tenant, name))
 }
 
 // PutObjectPersistent stores bytes in the durable (no-TTL) object bucket.
-func (a *Agent) PutObjectPersistent(ctx context.Context, name string, data []byte) error {
-	return a.b.ObjectPutPersistent(ctx, name, data)
+func (a *Agent) PutObjectPersistent(ctx context.Context, tenant, name string, data []byte) error {
+	return a.b.ObjectPutPersistent(ctx, protocol.TenantObjectName(tenant, name), data)
 }
-func (a *Agent) GetObjectPersistent(ctx context.Context, name string) ([]byte, error) {
-	return a.b.ObjectGetPersistent(ctx, name)
+func (a *Agent) GetObjectPersistent(ctx context.Context, tenant, name string) ([]byte, error) {
+	return a.b.ObjectGetPersistent(ctx, protocol.TenantObjectName(tenant, name))
 }
 
 func (a *Agent) Close() error { return a.b.Close() }

@@ -14,6 +14,9 @@ type RequestOpts struct {
 	MaxWaitMs int
 	// SessionName rides the envelope's first-class session_name field.
 	SessionName string
+	// Tenant rides the envelope's first-class tenant field. When empty the
+	// transport derives it from the subject's tenant segment.
+	Tenant string
 }
 
 // SubscribeOpts tunes a subscription.
@@ -30,6 +33,17 @@ type InboxPublishOpts struct {
 	// SessionName rides the envelope's session_name so the consumer can
 	// route the message back to its logical session.
 	SessionName string
+	// Tenant rides the envelope's tenant field.
+	Tenant string
+}
+
+// PublishOpts tunes a fire-and-forget publish.
+type PublishOpts struct {
+	// ReplyTo is the transport-internal reply address (set by request handling).
+	ReplyTo string
+	// Tenant rides the envelope's tenant field. When empty the transport
+	// derives it from the subject's tenant segment.
+	Tenant string
 }
 
 // Subscription is a live channel subscription.
@@ -109,7 +123,7 @@ type InboxSubscription interface {
 type Bus interface {
 	Request(ctx context.Context, ch string, payload any, opts RequestOpts) (abcprotocol.Envelope, error)
 	RequestMany(ctx context.Context, ch string, payload any, opts RequestOpts) ([]abcprotocol.Envelope, error)
-	Publish(ctx context.Context, ch string, payload any, replyTo string) error
+	Publish(ctx context.Context, ch string, payload any, opts PublishOpts) error
 	Subscribe(ctx context.Context, ch string, opts SubscribeOpts) (Subscription, error)
 
 	InboxPublish(ctx context.Context, ch string, payload any, opts InboxPublishOpts) error
