@@ -12,7 +12,7 @@ import (
 //   - metadata -> a KV bucket (FileMetaBucket) under key `f.<code>`,
 //     with a dedup index under `sha.<sha256>` -> code.
 //
-// This is the standard the agent and every NATS member (extensions, easylab
+// This is the standard the agent and every NATS member (extensions, abcp
 // via its own bus if ever) share, so file bytes are accessible to any holder
 // of a Bus — not owned by the agent.
 const (
