@@ -2,7 +2,6 @@ package extension
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 
 	"github.com/abcp-sdk/abc-protocol-go/bus"
@@ -17,6 +16,10 @@ import (
 // object store and the metadata to the configured meta backend, using the SAME
 // path as an in-process ingest. The tenant rides the subject/envelope, so no
 // separate credential is introduced.
+//
+// BYTES NEVER RIDE THE MESSAGE: the bytes are first put in the transient
+// object store (chunked by the transport, so any size is fine) and only the
+// object reference travels in the request.
 func IngestFileViaAgent(
 	ctx context.Context,
 	b bus.Bus,
@@ -24,10 +27,14 @@ func IngestFileViaAgent(
 	data []byte,
 	sessionName string,
 ) (string, error) {
+	object := protocol.NewID() + ".ingest"
+	if err := b.ObjectPut(ctx, protocol.TenantObjectName(tenant, object), data); err != nil {
+		return "", fmt.Errorf("file ingest object put: %w", err)
+	}
 	req := protocol.FileIngestRequest{
 		Name:        name,
 		Mime:        mime,
-		Data:        base64.StdEncoding.EncodeToString(data),
+		Object:      object,
 		SessionName: sessionName,
 	}
 	opts := bus.RequestOpts{Tenant: tenant}
@@ -53,7 +60,8 @@ func IngestFileViaAgent(
 
 // GetFileViaAgent fetches a stored file's bytes + metadata through the agent
 // (a 1:1 `req` on `abc.<tenant>.file.get`). Returns (nil, nil, nil) when the
-// file is absent.
+// file is absent. The agent writes the bytes to the transient object store and
+// returns the reference, so the bytes never ride the message.
 func GetFileViaAgent(
 	ctx context.Context,
 	b bus.Bus,
@@ -72,12 +80,12 @@ func GetFileViaAgent(
 	if !protocol.Coerce(env.Payload, &res) {
 		return nil, nil, fmt.Errorf("file get: malformed response")
 	}
-	if !res.Ok || res.Meta == nil || res.Data == "" {
+	if !res.Ok || res.Meta == nil || res.Object == "" {
 		return nil, nil, nil
 	}
-	data, err := base64.StdEncoding.DecodeString(res.Data)
+	data, err := b.ObjectGet(ctx, protocol.TenantObjectName(tenant, res.Object))
 	if err != nil {
-		return nil, nil, fmt.Errorf("file get: bad base64: %w", err)
+		return nil, nil, fmt.Errorf("file get object: %w", err)
 	}
 	return res.Meta, data, nil
 }

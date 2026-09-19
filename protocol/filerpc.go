@@ -23,12 +23,16 @@ func ChFileGet(tenant string) string {
 }
 
 // FileIngestRequest asks the agent to store bytes and return a file code.
-// `Data` is base64 on the wire.
+//
+// BYTES NEVER RIDE THE MESSAGE: the caller first stores the bytes in the
+// transient object store under TenantObjectName(tenant, object) (the transport
+// chunks them, so any size works and the broker max_payload is irrelevant),
+// then sends only that object reference here.
 type FileIngestRequest struct {
 	Code        string `json:"code,omitempty"`
 	Name        string `json:"name"`
 	Mime        string `json:"mime"`
-	Data        string `json:"data"`
+	Object      string `json:"object"`
 	SessionName string `json:"session_name,omitempty"`
 }
 
@@ -61,10 +65,12 @@ type FileGetRequest struct {
 	Code string `json:"code"`
 }
 
-// FileGetResponse is the reply to a FileGetRequest. `Data` is base64.
+// FileGetResponse is the reply to a FileGetRequest. As with ingest, bytes never
+// ride the message: the agent writes them to the transient object store and
+// returns only the object reference; the caller reads it via ObjectGet.
 type FileGetResponse struct {
-	Ok    bool              `json:"ok"`
-	Meta  *FileMetaWire     `json:"meta,omitempty"`
-	Data  string            `json:"data,omitempty"`
-	Error *FileErrorPayload `json:"error,omitempty"`
+	Ok     bool              `json:"ok"`
+	Meta   *FileMetaWire     `json:"meta,omitempty"`
+	Object string            `json:"object,omitempty"`
+	Error  *FileErrorPayload `json:"error,omitempty"`
 }
