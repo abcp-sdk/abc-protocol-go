@@ -72,6 +72,60 @@ func (e ErrorPayloadCode) Valid() bool {
 	}
 }
 
+// Defines values for ExtensionConfigItemCapability.
+const (
+	ExtensionConfigItemCapabilityEmbedding     ExtensionConfigItemCapability = "embedding"
+	ExtensionConfigItemCapabilityImage         ExtensionConfigItemCapability = "image"
+	ExtensionConfigItemCapabilityRealtime      ExtensionConfigItemCapability = "realtime"
+	ExtensionConfigItemCapabilityRerank        ExtensionConfigItemCapability = "rerank"
+	ExtensionConfigItemCapabilitySpeech        ExtensionConfigItemCapability = "speech"
+	ExtensionConfigItemCapabilityText          ExtensionConfigItemCapability = "text"
+	ExtensionConfigItemCapabilityTranscription ExtensionConfigItemCapability = "transcription"
+	ExtensionConfigItemCapabilityVideo         ExtensionConfigItemCapability = "video"
+)
+
+// Valid indicates whether the value is a known member of the ExtensionConfigItemCapability enum.
+func (e ExtensionConfigItemCapability) Valid() bool {
+	switch e {
+	case ExtensionConfigItemCapabilityEmbedding:
+		return true
+	case ExtensionConfigItemCapabilityImage:
+		return true
+	case ExtensionConfigItemCapabilityRealtime:
+		return true
+	case ExtensionConfigItemCapabilityRerank:
+		return true
+	case ExtensionConfigItemCapabilitySpeech:
+		return true
+	case ExtensionConfigItemCapabilityText:
+		return true
+	case ExtensionConfigItemCapabilityTranscription:
+		return true
+	case ExtensionConfigItemCapabilityVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtensionConfigItemKind.
+const (
+	ExtensionConfigItemKindModel ExtensionConfigItemKind = "model"
+	ExtensionConfigItemKindValue ExtensionConfigItemKind = "value"
+)
+
+// Valid indicates whether the value is a known member of the ExtensionConfigItemKind enum.
+func (e ExtensionConfigItemKind) Valid() bool {
+	switch e {
+	case ExtensionConfigItemKindModel:
+		return true
+	case ExtensionConfigItemKindValue:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ExtensionConfigItemScope.
 const (
 	ExtensionConfigItemScopeGlobal  ExtensionConfigItemScope = "global"
@@ -129,6 +183,60 @@ func (e ExtensionManifestCapabilities) Valid() bool {
 	case Prompt:
 		return true
 	case Tools:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtensionManifestConfigCapability.
+const (
+	ExtensionManifestConfigCapabilityEmbedding     ExtensionManifestConfigCapability = "embedding"
+	ExtensionManifestConfigCapabilityImage         ExtensionManifestConfigCapability = "image"
+	ExtensionManifestConfigCapabilityRealtime      ExtensionManifestConfigCapability = "realtime"
+	ExtensionManifestConfigCapabilityRerank        ExtensionManifestConfigCapability = "rerank"
+	ExtensionManifestConfigCapabilitySpeech        ExtensionManifestConfigCapability = "speech"
+	ExtensionManifestConfigCapabilityText          ExtensionManifestConfigCapability = "text"
+	ExtensionManifestConfigCapabilityTranscription ExtensionManifestConfigCapability = "transcription"
+	ExtensionManifestConfigCapabilityVideo         ExtensionManifestConfigCapability = "video"
+)
+
+// Valid indicates whether the value is a known member of the ExtensionManifestConfigCapability enum.
+func (e ExtensionManifestConfigCapability) Valid() bool {
+	switch e {
+	case ExtensionManifestConfigCapabilityEmbedding:
+		return true
+	case ExtensionManifestConfigCapabilityImage:
+		return true
+	case ExtensionManifestConfigCapabilityRealtime:
+		return true
+	case ExtensionManifestConfigCapabilityRerank:
+		return true
+	case ExtensionManifestConfigCapabilitySpeech:
+		return true
+	case ExtensionManifestConfigCapabilityText:
+		return true
+	case ExtensionManifestConfigCapabilityTranscription:
+		return true
+	case ExtensionManifestConfigCapabilityVideo:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExtensionManifestConfigKind.
+const (
+	ExtensionManifestConfigKindModel ExtensionManifestConfigKind = "model"
+	ExtensionManifestConfigKindValue ExtensionManifestConfigKind = "value"
+)
+
+// Valid indicates whether the value is a known member of the ExtensionManifestConfigKind enum.
+func (e ExtensionManifestConfigKind) Valid() bool {
+	switch e {
+	case ExtensionManifestConfigKindModel:
+		return true
+	case ExtensionManifestConfigKindValue:
 		return true
 	default:
 		return false
@@ -354,13 +462,11 @@ type Envelope struct {
 
 	// Payload Opaque business body.
 	Payload     interface{} `json:"payload,omitempty"`
+	Pending     *int        `json:"pending,omitempty"`
 	ReplyTo     *string     `json:"reply_to,omitempty"`
 	SessionName *string     `json:"session_name,omitempty"`
-
-	// Tenant Tenant the message belongs to. MUST equal the second subject
-	// segment for every data-plane channel.
-	Tenant string `json:"tenant"`
-	V      *int   `json:"v,omitempty"`
+	Tenant      string      `json:"tenant"`
+	V           *int        `json:"v,omitempty"`
 }
 
 // EnvelopeKind defines model for Envelope.Kind.
@@ -377,14 +483,24 @@ type ErrorPayloadCode string
 
 // ExtensionConfigItem defines model for ExtensionConfigItem.
 type ExtensionConfigItem struct {
+	Capability *ExtensionConfigItemCapability `json:"capability,omitempty"`
+
 	// Default Default value when unset.
-	Default     interface{}               `json:"default,omitempty"`
-	Description *string                   `json:"description,omitempty"`
-	EnumValues  *[]string                 `json:"enum_values,omitempty"`
-	Name        string                    `json:"name"`
-	Scope       *ExtensionConfigItemScope `json:"scope,omitempty"`
-	Type        ExtensionConfigItemType   `json:"type"`
+	Default      interface{}               `json:"default,omitempty"`
+	Description  *string                   `json:"description,omitempty"`
+	Descriptions *map[string]string        `json:"descriptions,omitempty"`
+	EnumValues   *[]string                 `json:"enum_values,omitempty"`
+	Kind         *ExtensionConfigItemKind  `json:"kind,omitempty"`
+	Name         string                    `json:"name"`
+	Scope        *ExtensionConfigItemScope `json:"scope,omitempty"`
+	Type         ExtensionConfigItemType   `json:"type"`
 }
+
+// ExtensionConfigItemCapability defines model for ExtensionConfigItem.Capability.
+type ExtensionConfigItemCapability string
+
+// ExtensionConfigItemKind defines model for ExtensionConfigItem.Kind.
+type ExtensionConfigItemKind string
 
 // ExtensionConfigItemScope defines model for ExtensionConfigItem.Scope.
 type ExtensionConfigItemScope string
@@ -396,11 +512,14 @@ type ExtensionConfigItemType string
 type ExtensionManifest struct {
 	Capabilities *[]ExtensionManifestCapabilities `json:"capabilities,omitempty"`
 	Config       *[]struct {
+		Capability *ExtensionManifestConfigCapability `json:"capability,omitempty"`
+
 		// Default Default value when unset.
 		Default      interface{}                   `json:"default,omitempty"`
 		Description  *string                       `json:"description,omitempty"`
 		Descriptions *map[string]string            `json:"descriptions,omitempty"`
 		EnumValues   *[]string                     `json:"enum_values,omitempty"`
+		Kind         *ExtensionManifestConfigKind  `json:"kind,omitempty"`
 		Name         string                        `json:"name"`
 		Scope        *ExtensionManifestConfigScope `json:"scope,omitempty"`
 		Type         ExtensionManifestConfigType   `json:"type"`
@@ -423,19 +542,25 @@ type ExtensionManifest struct {
 		} `json:"variables,omitempty"`
 	} `json:"prompt,omitempty"`
 	Tools *[]struct {
-		RequiredConfig *[]string          `json:"required_config,omitempty"`
-		Description    string             `json:"description"`
-		Descriptions   *map[string]string `json:"descriptions,omitempty"`
+		Description  string             `json:"description"`
+		Descriptions *map[string]string `json:"descriptions,omitempty"`
 
 		// InputSchema JSON Schema describing tool input.
-		InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
-		Name        string                  `json:"name"`
+		InputSchema    *map[string]interface{} `json:"input_schema,omitempty"`
+		Name           string                  `json:"name"`
+		RequiredConfig *[]string               `json:"required_config,omitempty"`
 	} `json:"tools,omitempty"`
 	Version string `json:"version"`
 }
 
 // ExtensionManifestCapabilities defines model for ExtensionManifest.Capabilities.
 type ExtensionManifestCapabilities string
+
+// ExtensionManifestConfigCapability defines model for ExtensionManifest.Config.Capability.
+type ExtensionManifestConfigCapability string
+
+// ExtensionManifestConfigKind defines model for ExtensionManifest.Config.Kind.
+type ExtensionManifestConfigKind string
 
 // ExtensionManifestConfigScope defines model for ExtensionManifest.Config.Scope.
 type ExtensionManifestConfigScope string
@@ -451,13 +576,13 @@ type ExtensionManifestPromptVariablesScope string
 
 // ExtensionTool defines model for ExtensionTool.
 type ExtensionTool struct {
-	RequiredConfig *[]string          `json:"required_config,omitempty"`
-	Description    string             `json:"description"`
-	Descriptions   *map[string]string `json:"descriptions,omitempty"`
+	Description  string             `json:"description"`
+	Descriptions *map[string]string `json:"descriptions,omitempty"`
 
 	// InputSchema JSON Schema describing tool input.
-	InputSchema *map[string]interface{} `json:"input_schema,omitempty"`
-	Name        string                  `json:"name"`
+	InputSchema    *map[string]interface{} `json:"input_schema,omitempty"`
+	Name           string                  `json:"name"`
+	RequiredConfig *[]string               `json:"required_config,omitempty"`
 }
 
 // ExtensionVariable defines model for ExtensionVariable.
@@ -516,10 +641,8 @@ type InterruptSignal struct {
 
 // LifecycleEvent defines model for LifecycleEvent.
 type LifecycleEvent struct {
-	// Id is the unique event id (eid). Durable publishers always set it so
-	// consumers can dedup across replay/redelivery.
-	Id     *string            `json:"id,omitempty"`
 	From   *string            `json:"from,omitempty"`
+	Id     *string            `json:"id,omitempty"`
 	Kind   LifecycleEventKind `json:"kind"`
 	Parent *string            `json:"parent,omitempty"`
 

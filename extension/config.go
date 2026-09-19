@@ -18,6 +18,15 @@ type ConfigSpec struct {
 	// fallback, same convention as tool descriptions.
 	Descriptions map[string]string
 	Type         string // string | number | boolean | enum | json
+	// Kind distinguishes an ordinary knob ("value", default) from a model
+	// reference ("model"): the latter's value is a `provider_id/model_id`
+	// reference and the UI renders a picker scoped to Capability, not a text
+	// field. Mirrors the TS ConfigSpec.kind.
+	Kind string // "value" | "model"
+	// Capability is REQUIRED when Kind == "model": the modality the reference
+	// must match (text | image | video | speech | transcription | embedding |
+	// rerank | realtime).
+	Capability   string
 	EnumValues   []string
 	Default      any
 	Scope        string // "global" | "session" (default global)

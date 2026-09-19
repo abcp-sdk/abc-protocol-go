@@ -165,11 +165,11 @@ type OnCallHook func(ctx context.Context, hook, sessionName string, args map[str
 type OnEventHook func(ctx context.Context, hook, sessionName string, payload any, tenant string) error
 
 type manifestTool = struct {
-	RequiredConfig *[]string               `json:"required_config,omitempty"`
 	Description    string                  `json:"description"`
 	Descriptions   *map[string]string      `json:"descriptions,omitempty"`
 	InputSchema    *map[string]interface{} `json:"input_schema,omitempty"`
 	Name           string                  `json:"name"`
+	RequiredConfig *[]string               `json:"required_config,omitempty"`
 }
 
 // manifestVariables mirrors the Prompt.variables type in types.gen.go so we
@@ -179,6 +179,23 @@ type manifestVariable = struct {
 	Descriptions *map[string]string                                 `json:"descriptions,omitempty"`
 	Name         string                                             `json:"name"`
 	Scope        *abcprotocol.ExtensionManifestPromptVariablesScope `json:"scope,omitempty"`
+}
+
+// manifestConfig mirrors the anonymous ExtensionManifest.Config item type in
+// types.gen.go so we can assign it directly. Field order matches the
+// generator (alphabetical) — Go structural typing is by field set + tags, so
+// order does not matter for assignability, but keeping it identical avoids
+// confusion.
+type manifestConfig = struct {
+	Capability   *abcprotocol.ExtensionManifestConfigCapability `json:"capability,omitempty"`
+	Default      any                                           `json:"default,omitempty"`
+	Description  *string                                       `json:"description,omitempty"`
+	Descriptions *map[string]string                            `json:"descriptions,omitempty"`
+	EnumValues   *[]string                                     `json:"enum_values,omitempty"`
+	Kind         *abcprotocol.ExtensionManifestConfigKind      `json:"kind,omitempty"`
+	Name         string                                        `json:"name"`
+	Scope        *abcprotocol.ExtensionManifestConfigScope     `json:"scope,omitempty"`
+	Type         abcprotocol.ExtensionManifestConfigType       `json:"type"`
 }
 
 // Extension is the extension-side role.
@@ -249,25 +266,23 @@ func New(b bus.Bus, cfg Config) *Extension {
 		}{Variables: &vars}
 	}
 	if len(cfg.Config) > 0 {
-		items := []struct {
-			Default      any                                       `json:"default,omitempty"`
-			Description  *string                                   `json:"description,omitempty"`
-			Descriptions *map[string]string                        `json:"descriptions,omitempty"`
-			EnumValues   *[]string                                 `json:"enum_values,omitempty"`
-			Name         string                                    `json:"name"`
-			Scope        *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
-			Type         abcprotocol.ExtensionManifestConfigType   `json:"type"`
-		}{}
+		items := []manifestConfig{}
 		for name, spec := range cfg.Config {
-			item := struct {
-				Default      any                                       `json:"default,omitempty"`
-				Description  *string                                   `json:"description,omitempty"`
-				Descriptions *map[string]string                        `json:"descriptions,omitempty"`
-				EnumValues   *[]string                                 `json:"enum_values,omitempty"`
-				Name         string                                    `json:"name"`
-				Scope        *abcprotocol.ExtensionManifestConfigScope `json:"scope,omitempty"`
-				Type         abcprotocol.ExtensionManifestConfigType   `json:"type"`
-			}{Name: name, Type: abcprotocol.ExtensionManifestConfigType(spec.Type)}
+			item := manifestConfig{
+				Name: name,
+				Type: abcprotocol.ExtensionManifestConfigType(spec.Type),
+			}
+			// kind defaults to "value" (mirrors the TS schema default).
+			kind := spec.Kind
+			if kind == "" {
+				kind = "value"
+			}
+			k := abcprotocol.ExtensionManifestConfigKind(kind)
+			item.Kind = &k
+			if spec.Capability != "" {
+				cap := abcprotocol.ExtensionManifestConfigCapability(spec.Capability)
+				item.Capability = &cap
+			}
 			if spec.Description != "" {
 				d := spec.Description
 				item.Description = &d

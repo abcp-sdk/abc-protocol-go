@@ -88,3 +88,58 @@ lifecycle: [created, forked, renamed, deleted]
 		t.Fatalf("cfg.Lifecycle = %v", cfg.Lifecycle)
 	}
 }
+
+// TestConfigKindCapability verifies the model-picker fields (kind/capability)
+// flow from the manifest YAML through BuildConfig into the ConfigSpec — the
+// Go twin of the TS ConfigSpec.kind/capability.
+func TestConfigKindCapability(t *testing.T) {
+	yaml := `
+id: model-ext
+version: 2.0.0
+config:
+  - name: model.image
+    type: string
+    kind: model
+    capability: image
+    description: image model
+  - name: api-key
+    type: string
+    description: plain knob
+`
+	m, err := manifest.ParseManifest([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := m.BuildConfig(manifest.Bindings{})
+
+	img := cfg.Config["model.image"]
+	if img.Kind != "model" || img.Capability != "image" {
+		t.Fatalf("model.image = %+v (want kind=model capability=image)", img)
+	}
+	key := cfg.Config["api-key"]
+	if key.Kind != "" || key.Capability != "" {
+		t.Fatalf("api-key = %+v (want empty kind/capability)", key)
+	}
+
+	// The extension manifest must advertise them so a UI can render a picker.
+	ext := extension.New(nil, cfg)
+	man := ext.Manifest()
+	if man.Config == nil {
+		t.Fatal("manifest config nil")
+	}
+	found := false
+	for _, item := range *man.Config {
+		if item.Name == "model.image" {
+			found = true
+			if item.Kind == nil || string(*item.Kind) != "model" {
+				t.Fatalf("manifest kind = %v", item.Kind)
+			}
+			if item.Capability == nil || string(*item.Capability) != "image" {
+				t.Fatalf("manifest capability = %v", item.Capability)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("model.image not in manifest config")
+	}
+}

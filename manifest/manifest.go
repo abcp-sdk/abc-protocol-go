@@ -46,6 +46,8 @@ type ManifestVariable struct {
 type ManifestConfig struct {
 	Name         string            `yaml:"name"`
 	Type         string            `yaml:"type"` // string | number | boolean | enum | json
+	Kind         string            `yaml:"kind"` // "value" (default) | "model"
+	Capability   string            `yaml:"capability"`
 	EnumValues   []string          `yaml:"enum_values"`
 	Default      any               `yaml:"default"`
 	Description  string            `yaml:"description"`
@@ -144,6 +146,8 @@ func (m *Manifest) BuildConfig(b Bindings) extension.Config {
 			Description:  c.Description,
 			Descriptions: c.Descriptions,
 			Type:         c.Type,
+			Kind:         c.Kind,
+			Capability:   c.Capability,
 			EnumValues:   c.EnumValues,
 			Default:      c.Default,
 			Scope:        c.Scope,
