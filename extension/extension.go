@@ -17,8 +17,8 @@ import (
 // maxToolContentBytes caps a tool's `content` text returned to the agent. It
 // is fed into the model's context, so text above this is REJECTED as a tool
 // error; large data must be returned as a FILE (data.files + object store).
-// 64 KiB ≈ 16k English tokens / ≈22k CJK tokens, safely under a 32k target.
-const maxToolContentBytes = 64 * 1024
+// 128 KiB ≈ 32k English tokens / ≈40k+ CJK tokens.
+const maxToolContentBytes = 128 * 1024
 
 // ToolResultData is what a tool Execute returns.
 type ToolResultData struct {
