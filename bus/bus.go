@@ -118,6 +118,17 @@ type InboxSubscription interface {
 	Close() error
 }
 
+// ObjectStore is transport-agnostic object storage (bytes). The NATS bus
+// implements it natively; a deployment may inject an S3-compatible store so
+// DURABLE file bytes never sit in NATS. One backend per class, no fallback:
+// the durable methods below may delegate to an injected store.
+type ObjectStore interface {
+	ObjectPut(ctx context.Context, name string, data []byte) error
+	ObjectGet(ctx context.Context, name string) ([]byte, error)
+	ObjectPutPersistent(ctx context.Context, name string, data []byte) error
+	ObjectGetPersistent(ctx context.Context, name string) ([]byte, error)
+}
+
 // Bus is the transport-agnostic message bus. There is exactly one
 // transport (NATS); every listed capability is always available (JetStream).
 type Bus interface {
@@ -142,7 +153,6 @@ type Bus interface {
 	// Tool payloads use ObjectPut (transient); durable file bytes use this.
 	ObjectPutPersistent(ctx context.Context, name string, data []byte) error
 	ObjectGetPersistent(ctx context.Context, name string) ([]byte, error)
-
 	// KvWatch streams bucket entries matching keys (NATS wildcard). The
 	// initial snapshot arrives first, then live updates.
 	KvWatch(ctx context.Context, bucket, keys string) (<-chan KvEvent, func(), error)

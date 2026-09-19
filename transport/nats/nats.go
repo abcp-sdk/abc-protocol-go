@@ -33,6 +33,9 @@ type Bus struct {
 	nc  *nats.Conn
 	js  nats.JetStreamContext
 	idn *identity.Identity
+	// durable, when set, owns ObjectPutPersistent/ObjectGetPersistent (file
+	// bytes). Transient objects always stay on NATS. One backend, no fallback.
+	durable bus.ObjectStore
 }
 
 var _ bus.Bus = (*Bus)(nil)
@@ -48,6 +51,10 @@ type Options struct {
 	// carry abc-id/abc-sig NATS headers (HMAC), incoming messages are
 	// verified. Nil (default) = zero auth overhead, everything passes.
 	Identity *identity.Identity
+	// DurableObjects, when set, owns the durable (file-bytes) object
+	// methods so they never touch NATS; transient objects stay on NATS.
+	// One backend per class, no read fallback.
+	DurableObjects bus.ObjectStore
 }
 
 // Connect establishes a NATS connection with the default stream topology.
@@ -80,7 +87,7 @@ func ConnectWithOptions(url string, opts Options) (*Bus, error) {
 		nc.Close()
 		return nil, err
 	}
-	return &Bus{nc: nc, js: js, idn: opts.Identity}, nil
+	return &Bus{nc: nc, js: js, idn: opts.Identity, durable: opts.DurableObjects}, nil
 }
 
 // ensureStreams reconciles the mailbox/events/dlq streams. Order matters:
@@ -513,6 +520,9 @@ func (b *Bus) ObjectGet(ctx context.Context, name string) ([]byte, error) {
 }
 
 func (b *Bus) ObjectPutPersistent(ctx context.Context, name string, data []byte) error {
+	if b.durable != nil {
+		return b.durable.ObjectPutPersistent(ctx, name, data)
+	}
 	os, err := b.js.CreateObjectStore(&nats.ObjectStoreConfig{Bucket: objectBucketDur})
 	if err != nil {
 		os, err = b.js.ObjectStore(objectBucketDur)
@@ -525,6 +535,9 @@ func (b *Bus) ObjectPutPersistent(ctx context.Context, name string, data []byte)
 }
 
 func (b *Bus) ObjectGetPersistent(ctx context.Context, name string) ([]byte, error) {
+	if b.durable != nil {
+		return b.durable.ObjectGetPersistent(ctx, name)
+	}
 	os, err := b.js.ObjectStore(objectBucketDur)
 	if err != nil {
 		return nil, nil
