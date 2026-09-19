@@ -9,7 +9,8 @@ import (
 )
 
 // IngestFileViaAgent stores bytes through the AGENT (a 1:1 `req` on
-// `abc.<tenant>.file.ingest`) and returns the canonical `file:<code>`.
+// `abc.<tenant>.file.ingest`) and returns the canonical `file:<code>` plus the
+// content type the agent DERIVED from the bytes (callers pass no mime).
 //
 // For extensions that own no blob backend or metadata store (no S3
 // credentials, no agent DB): the agent persists the bytes to the configured
@@ -23,17 +24,16 @@ import (
 func IngestFileViaAgent(
 	ctx context.Context,
 	b bus.Bus,
-	tenant, name, mime string,
+	tenant, name string,
 	data []byte,
 	sessionName string,
-) (string, error) {
+) (code string, mime string, err error) {
 	object := protocol.NewID() + ".ingest"
 	if err := b.ObjectPut(ctx, protocol.TenantObjectName(tenant, object), data); err != nil {
-		return "", fmt.Errorf("file ingest object put: %w", err)
+		return "", "", fmt.Errorf("file ingest object put: %w", err)
 	}
 	req := protocol.FileIngestRequest{
 		Name:        name,
-		Mime:        mime,
 		Object:      object,
 		SessionName: sessionName,
 	}
@@ -43,19 +43,19 @@ func IngestFileViaAgent(
 	}
 	env, err := b.Request(ctx, protocol.ChFileIngest(tenant), req, opts)
 	if err != nil {
-		return "", fmt.Errorf("file ingest request: %w", err)
+		return "", "", fmt.Errorf("file ingest request: %w", err)
 	}
 	var res protocol.FileIngestResponse
 	if !protocol.Coerce(env.Payload, &res) {
-		return "", fmt.Errorf("file ingest: malformed response")
+		return "", "", fmt.Errorf("file ingest: malformed response")
 	}
 	if !res.Ok {
 		if res.Error != nil && res.Error.Message != "" {
-			return "", fmt.Errorf("file ingest: %s", res.Error.Message)
+			return "", "", fmt.Errorf("file ingest: %s", res.Error.Message)
 		}
-		return "", fmt.Errorf("file ingest failed")
+		return "", "", fmt.Errorf("file ingest failed")
 	}
-	return res.Code, nil
+	return res.Code, res.Mime, nil
 }
 
 // GetFileViaAgent fetches a stored file's bytes + metadata through the agent

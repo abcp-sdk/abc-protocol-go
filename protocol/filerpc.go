@@ -31,7 +31,6 @@ func ChFileGet(tenant string) string {
 type FileIngestRequest struct {
 	Code        string `json:"code,omitempty"`
 	Name        string `json:"name"`
-	Mime        string `json:"mime"`
 	Object      string `json:"object"`
 	SessionName string `json:"session_name,omitempty"`
 }
@@ -63,10 +62,12 @@ type FileErrorPayload struct {
 	Message string `json:"message"`
 }
 
-// FileIngestResponse is the reply to a FileIngestRequest.
+// FileIngestResponse is the reply to a FileIngestRequest. Mime is the content
+// type the agent DERIVED from the bytes (the caller supplies none).
 type FileIngestResponse struct {
 	Ok    bool              `json:"ok"`
 	Code  string            `json:"code,omitempty"`
+	Mime  string            `json:"mime,omitempty"`
 	Error *FileErrorPayload `json:"error,omitempty"`
 }
 
