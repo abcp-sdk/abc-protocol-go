@@ -14,7 +14,11 @@ import (
 	"github.com/abcp-sdk/abc-protocol-go/protocol"
 )
 
-const offloadThreshold = 256 * 1024
+// maxToolContentBytes caps a tool's `content` text returned to the agent. It
+// is fed into the model's context, so text above this is REJECTED as a tool
+// error; large data must be returned as a FILE (data.files + object store).
+// 64 KiB ≈ 16k English tokens / ≈22k CJK tokens, safely under a 32k target.
+const maxToolContentBytes = 64 * 1024
 
 // ToolResultData is what a tool Execute returns.
 type ToolResultData struct {
@@ -492,26 +496,24 @@ func (e *Extension) handleToolCall(ctx context.Context, name string, spec ToolSp
 			Message string                          `json:"message"`
 		}{Code: code, Message: msg}
 	} else {
-		if len(data.Content) > offloadThreshold {
-			obj := call.CallId + ".data"
-			_ = e.b.ObjectPut(ctx, protocol.TenantObjectName(tenant, obj), []byte(data.Content))
-			ct := "text/plain"
-			res.Object = &struct {
-				ContentType *string `json:"content_type,omitempty"`
-				Id          string  `json:"id"`
-			}{ContentType: &ct, Id: obj}
-			head := data.Content
-			if len(head) > 400 {
-				head = head[:400]
-			}
-			res.Content = &head
+		// Text feeds the model's context; a huge blob would blow it. Return
+		// large data as a FILE (data.files + object store), not as content.
+		if data.Content != "" && len([]byte(data.Content)) > maxToolContentBytes {
+			msg := fmt.Sprintf(
+				"tool '%s' returned %d bytes of text, over the %d-byte limit; return large data as a file (data.files) instead",
+				name, len([]byte(data.Content)), maxToolContentBytes,
+			)
+			res.Error = &struct {
+				Code    abcprotocol.ToolResultErrorCode `json:"code"`
+				Message string                          `json:"message"`
+			}{Code: abcprotocol.ToolResultErrorCodeInvalidArgument, Message: msg}
 		} else if data.Content != "" {
 			res.Content = &data.Content
 		}
-		if data.Data != nil {
+		if res.Error == nil && data.Data != nil {
 			res.Data = data.Data
 		}
-		if data.Object != nil {
+		if res.Error == nil && data.Object != nil {
 			res.Object = &struct {
 				ContentType *string `json:"content_type,omitempty"`
 				Id          string  `json:"id"`
