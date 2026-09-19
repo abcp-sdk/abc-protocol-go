@@ -37,6 +37,11 @@ type FileIngestRequest struct {
 }
 
 // FileMetaWire mirrors the agent's file metadata record on the wire.
+//
+// The optional media fields are SERVER-derived (agent-side ffprobe/ffmpeg):
+// width/height (px), duration_ms, thumb_code (the code of a separate
+// content-addressed thumbnail file) and thumbhash (base64 ThumbHash). They are
+// absent for non-media files and for files stored before the feature existed.
 type FileMetaWire struct {
 	Code            string `json:"code"`
 	Sha256          string `json:"sha256"`
@@ -45,6 +50,11 @@ type FileMetaWire struct {
 	Size            int64  `json:"size"`
 	UploaderSession string `json:"uploader_session,omitempty"`
 	CreatedAt       string `json:"created_at"`
+	Width           *int32 `json:"width,omitempty"`
+	Height          *int32 `json:"height,omitempty"`
+	DurationMs      *int64 `json:"duration_ms,omitempty"`
+	ThumbCode       string `json:"thumb_code,omitempty"`
+	Thumbhash       string `json:"thumbhash,omitempty"`
 }
 
 // FileErrorPayload carries a standard error code + message.
