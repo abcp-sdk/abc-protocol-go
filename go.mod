@@ -7,7 +7,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.5
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.5
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.113.1
-	github.com/gorilla/websocket v1.5.3
 	github.com/nats-io/nats.go v1.53.1
 	gopkg.in/yaml.v3 v3.0.1
 )

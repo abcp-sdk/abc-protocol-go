@@ -3,6 +3,7 @@ package conformance
 import (
 	"testing"
 
+	"github.com/abcp-sdk/abc-protocol-go/v2/i18n"
 	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
@@ -34,5 +35,40 @@ func TestGoldenVectors(t *testing.T) {
 		if v.got != v.want {
 			t.Errorf("%s = %q, want %q (TS/Go derivations drifted)", name, v.got, v.want)
 		}
+	}
+}
+
+// goldenI18n catalog mirrors tests/golden.ts (i18n section) in @abc-protocol/sdk
+// so the TS and Go i18n cores resolve identically.
+var goldenI18n = i18n.Catalog{
+	"hello": {"en": "Hello {name}", "zh": "你好 {name}", "ja": "こんにちは {name}"},
+	"plain": {"en": "plain", "zh": "简单"},
+}
+
+func TestGoldenI18n(t *testing.T) {
+	cases := []struct {
+		key, locale string
+		params      i18n.Params
+		want        string
+	}{
+		{"hello", "zh", i18n.Params{"name": "X"}, "你好 X"},
+		{"hello", "zh-CN", i18n.Params{"name": "X"}, "你好 X"},
+		{"hello", "zh_Hans", i18n.Params{"name": "X"}, "你好 X"},
+		{"hello", "ja-JP", i18n.Params{"name": "X"}, "こんにちは X"},
+		{"hello", "de", i18n.Params{"name": "X"}, "Hello X"},
+		{"hello", "", i18n.Params{"name": "X"}, "Hello X"},
+		{"plain", "zh", nil, "简单"},
+		{"plain", "unknown", nil, "plain"},
+	}
+	for _, c := range cases {
+		if got := i18n.Translate(goldenI18n, c.key, c.locale, c.params, ""); got != c.want {
+			t.Errorf("Translate(%q,%q) = %q, want %q (TS/Go i18n drifted)", c.key, c.locale, got, c.want)
+		}
+	}
+	if got := i18n.BaseLang("zh-Hans"); got != "zh" {
+		t.Errorf("BaseLang(zh-Hans) = %q, want zh", got)
+	}
+	if got := i18n.Interpolate("Hi {a} {b}", i18n.Params{"a": "1"}); got != "Hi 1 {b}" {
+		t.Errorf("Interpolate = %q", got)
 	}
 }
