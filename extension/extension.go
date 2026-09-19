@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go/v2"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // maxToolContentBytes caps a tool's `content` text returned to the agent. It

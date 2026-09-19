@@ -4,9 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/natsrun"
-	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/v2/transport/nats"
 )
 
 // TestConformance runs the full protocol suite. Every subtest gets its OWN

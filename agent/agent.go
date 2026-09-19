@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/extension"
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go/v2"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/extension"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // ToolResult is a resolved tool result. Content is the natural-language

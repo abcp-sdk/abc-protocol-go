@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 
-	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go/v2"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // Lifecycle events are the agent's durable session lifecycle notifications on

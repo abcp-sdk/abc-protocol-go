@@ -3,7 +3,7 @@ package conformance
 import (
 	"testing"
 
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // goldenVectors mirrors tests/golden.ts in @abc-protocol/sdk. If either side

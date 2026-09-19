@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // IngestFileViaAgent stores bytes through the AGENT (a 1:1 `req` on

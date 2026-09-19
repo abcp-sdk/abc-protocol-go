@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go/v2"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // ConfigSpec declares one config knob in Extension.Config.

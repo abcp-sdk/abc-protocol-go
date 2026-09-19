@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/abcp-sdk/abc-protocol-go/extension"
+	"github.com/abcp-sdk/abc-protocol-go/v2/extension"
 	"gopkg.in/yaml.v3"
 )
 

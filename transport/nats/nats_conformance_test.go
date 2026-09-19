@@ -4,9 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/conformance"
-	"github.com/abcp-sdk/abc-protocol-go/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/conformance"
+	"github.com/abcp-sdk/abc-protocol-go/v2/natsrun"
 )
 
 // TestConformance runs the shared suite on its OWN ephemeral broker per

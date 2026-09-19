@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abcp-sdk/abc-protocol-go/agent"
-	"github.com/abcp-sdk/abc-protocol-go/extension"
-	"github.com/abcp-sdk/abc-protocol-go/identity"
-	"github.com/abcp-sdk/abc-protocol-go/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/v2/agent"
+	"github.com/abcp-sdk/abc-protocol-go/v2/extension"
+	"github.com/abcp-sdk/abc-protocol-go/v2/identity"
+	"github.com/abcp-sdk/abc-protocol-go/v2/natsrun"
 )
 
 // TestIdentityAuth pins the opt-in message authentication: with an

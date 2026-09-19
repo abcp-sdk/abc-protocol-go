@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 )
 
 // Session lease semantics (protocol-level, cross-replica):

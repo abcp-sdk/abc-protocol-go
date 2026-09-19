@@ -2,7 +2,7 @@
 // a single import for generated types and channel/argument helpers.
 package abcprotocol
 
-import "github.com/abcp-sdk/abc-protocol-go/protocol"
+import "github.com/abcp-sdk/abc-protocol-go/v2/protocol"
 
 // ArgString reads a string tool argument (missing/typed wrong = "").
 func ArgString(args map[string]any, key string) string { return protocol.ArgString(args, key) }

@@ -1,4 +1,4 @@
-module github.com/abcp-sdk/abc-protocol-go
+module github.com/abcp-sdk/abc-protocol-go/v2
 
 go 1.26
 

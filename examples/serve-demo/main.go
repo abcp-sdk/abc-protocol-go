@@ -14,10 +14,10 @@ import (
 	"log/slog"
 	"os"
 
-	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
-	"github.com/abcp-sdk/abc-protocol-go/extension"
-	"github.com/abcp-sdk/abc-protocol-go/manifest"
-	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go/v2"
+	"github.com/abcp-sdk/abc-protocol-go/v2/extension"
+	"github.com/abcp-sdk/abc-protocol-go/v2/manifest"
+	"github.com/abcp-sdk/abc-protocol-go/v2/transport/nats"
 )
 
 //go:embed demo.manifest.yaml

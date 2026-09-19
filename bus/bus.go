@@ -3,7 +3,7 @@ package bus
 import (
 	"context"
 
-	abcprotocol "github.com/abcp-sdk/abc-protocol-go"
+	abcprotocol "github.com/abcp-sdk/abc-protocol-go/v2"
 )
 
 // RequestOpts tunes a request or broadcast.

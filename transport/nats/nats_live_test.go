@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abcp-sdk/abc-protocol-go/agent"
-	"github.com/abcp-sdk/abc-protocol-go/extension"
-	"github.com/abcp-sdk/abc-protocol-go/natsrun"
+	"github.com/abcp-sdk/abc-protocol-go/v2/agent"
+	"github.com/abcp-sdk/abc-protocol-go/v2/extension"
+	"github.com/abcp-sdk/abc-protocol-go/v2/natsrun"
 )
 
 // TestEchoFlowOverNats runs against ABC_NATS_URL when set (live-cluster

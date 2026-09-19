@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abcp-sdk/abc-protocol-go/agent"
-	"github.com/abcp-sdk/abc-protocol-go/bus"
-	"github.com/abcp-sdk/abc-protocol-go/protocol"
-	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
+	"github.com/abcp-sdk/abc-protocol-go/v2/agent"
+	"github.com/abcp-sdk/abc-protocol-go/v2/bus"
+	"github.com/abcp-sdk/abc-protocol-go/v2/protocol"
+	"github.com/abcp-sdk/abc-protocol-go/v2/transport/nats"
 )
 
 func startTestServer(t *testing.T) *Server {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/abcp-sdk/abc-protocol-go/extension"
-	"github.com/abcp-sdk/abc-protocol-go/manifest"
+	"github.com/abcp-sdk/abc-protocol-go/v2/extension"
+	"github.com/abcp-sdk/abc-protocol-go/v2/manifest"
 )
 
 func TestParseAndConfig(t *testing.T) {

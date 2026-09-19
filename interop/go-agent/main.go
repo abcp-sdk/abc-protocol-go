@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/abcp-sdk/abc-protocol-go/agent"
-	"github.com/abcp-sdk/abc-protocol-go/transport/nats"
+	"github.com/abcp-sdk/abc-protocol-go/v2/agent"
+	"github.com/abcp-sdk/abc-protocol-go/v2/transport/nats"
 )
 
 func expect(cond bool, msg string) {
