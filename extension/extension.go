@@ -188,14 +188,14 @@ type manifestVariable = struct {
 // confusion.
 type manifestConfig = struct {
 	Capability   *abcprotocol.ExtensionManifestConfigCapability `json:"capability,omitempty"`
-	Default      any                                           `json:"default,omitempty"`
-	Description  *string                                       `json:"description,omitempty"`
-	Descriptions *map[string]string                            `json:"descriptions,omitempty"`
-	EnumValues   *[]string                                     `json:"enum_values,omitempty"`
-	Kind         *abcprotocol.ExtensionManifestConfigKind      `json:"kind,omitempty"`
-	Name         string                                        `json:"name"`
-	Scope        *abcprotocol.ExtensionManifestConfigScope     `json:"scope,omitempty"`
-	Type         abcprotocol.ExtensionManifestConfigType       `json:"type"`
+	Default      any                                            `json:"default,omitempty"`
+	Description  *string                                        `json:"description,omitempty"`
+	Descriptions *map[string]string                             `json:"descriptions,omitempty"`
+	EnumValues   *[]string                                      `json:"enum_values,omitempty"`
+	Kind         *abcprotocol.ExtensionManifestConfigKind       `json:"kind,omitempty"`
+	Name         string                                         `json:"name"`
+	Scope        *abcprotocol.ExtensionManifestConfigScope      `json:"scope,omitempty"`
+	Type         abcprotocol.ExtensionManifestConfigType        `json:"type"`
 }
 
 // Extension is the extension-side role.

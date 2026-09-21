@@ -661,7 +661,15 @@ type MailboxMessage struct {
 
 	// Payload Opaque message body.
 	Payload interface{} `json:"payload,omitempty"`
-	Type    string      `json:"type"`
+
+	// Source ORIGIN of the message. Open string: `user` (a human prompt),
+	// `session:{session}` (another session), `system:{name}` (automation), or
+	// an extension-defined value.
+	Source *string `json:"source,omitempty"`
+
+	// Type Message type: `trigger` (drives a turn), `interrupt`, or `event`
+	// (context only). Free-form on the wire.
+	Type string `json:"type"`
 }
 
 // ObjectRef defines model for ObjectRef.

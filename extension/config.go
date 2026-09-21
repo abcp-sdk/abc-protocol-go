@@ -26,10 +26,10 @@ type ConfigSpec struct {
 	// Capability is REQUIRED when Kind == "model": the modality the reference
 	// must match (text | image | video | speech | transcription | embedding |
 	// rerank | realtime).
-	Capability   string
-	EnumValues   []string
-	Default      any
-	Scope        string // "global" | "session" (default global)
+	Capability string
+	EnumValues []string
+	Default    any
+	Scope      string // "global" | "session" (default global)
 	// Required gates tools that depend on this config: an agent may refuse to
 	// expose them until the value is set.
 	Required bool
@@ -206,17 +206,26 @@ func (e *Extension) PublishSessionEvent(ctx context.Context, tenant, sessionName
 	}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
 }
 
-// PublishMailboxEvent publishes an event to a session's durable mailbox
+// PublishMailboxEvent publishes a message to a session's durable mailbox
 // (visible to the agent's ConsumeMailbox loop and any UI tailing it).
-func (e *Extension) PublishMailboxEvent(ctx context.Context, tenant, sessionName, eventType string, payload any) error {
+//
+// eventType is `trigger` (drives a turn), `event` (context only), or
+// `interrupt`; source records the origin ("" omits it).
+func (e *Extension) PublishMailboxEvent(ctx context.Context, tenant, sessionName, eventType string, payload any, source ...string) error {
 	if eventType == "" {
 		eventType = "event"
+	}
+	var src *string
+	if len(source) > 0 && source[0] != "" {
+		s := source[0]
+		src = &s
 	}
 	id := protocol.NewID()
 	return e.b.InboxPublish(ctx, protocol.ChMailbox(tenant, sessionName), abcprotocol.MailboxMessage{
 		Id:      id,
 		Type:    eventType,
 		Payload: payload,
+		Source:  src,
 	}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
 }
 

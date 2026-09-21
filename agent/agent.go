@@ -34,6 +34,8 @@ type MailboxMessageResolved struct {
 	SessionName string
 	Type        string
 	Payload     any
+	// Source is the message origin (see PublishMailbox).
+	Source string
 }
 
 // Agent is the agent-side role.
@@ -266,11 +268,20 @@ func (a *Agent) SubscribeProgress(ctx context.Context, tenant, callID string) (b
 	return a.b.Subscribe(ctx, protocol.ChToolProgress(tenant, callID), bus.SubscribeOpts{})
 }
 
-// PublishMailbox drops a message into a session's durable mailbox. Type is
-// one of user_prompt / interrupt / event (free-form string on the wire).
-func (a *Agent) PublishMailbox(ctx context.Context, tenant, sessionName, typ string, payload any) error {
+// PublishMailbox drops a message into a session's durable mailbox.
+//
+// Type is `trigger` (drives a turn), `interrupt`, or `event` (context only);
+// it is a free-form string on the wire. Source records the ORIGIN: `user`
+// (a human prompt), `session:{session}` (another session), `system:{name}`
+// (automation), or an extension-defined value; pass "" to omit it.
+func (a *Agent) PublishMailbox(ctx context.Context, tenant, sessionName, typ string, payload any, source ...string) error {
 	id := protocol.NewID()
-	return a.b.InboxPublish(ctx, protocol.ChMailbox(tenant, sessionName), abcprotocol.MailboxMessage{Id: id, Type: typ, Payload: payload}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
+	var src *string
+	if len(source) > 0 && source[0] != "" {
+		s := source[0]
+		src = &s
+	}
+	return a.b.InboxPublish(ctx, protocol.ChMailbox(tenant, sessionName), abcprotocol.MailboxMessage{Id: id, Type: typ, Payload: payload, Source: src}, bus.InboxPublishOpts{ID: id, SessionName: sessionName, Tenant: tenant})
 }
 
 // DefaultMaxNaksBeforeTerm is the poison-message escalation threshold:
@@ -327,7 +338,11 @@ func (a *Agent) ConsumeMailbox(ctx context.Context, handler func(MailboxMessageR
 				msg.Ack()
 				continue
 			}
-			switch err := handler(MailboxMessageResolved{ID: m.Id, Tenant: tenant, SessionName: sessionName, Type: m.Type, Payload: m.Payload}); {
+			src := ""
+			if m.Source != nil {
+				src = *m.Source
+			}
+			switch err := handler(MailboxMessageResolved{ID: m.Id, Tenant: tenant, SessionName: sessionName, Type: m.Type, Payload: m.Payload, Source: src}); {
 			case err == nil:
 				forget(m.Id)
 				msg.Ack()

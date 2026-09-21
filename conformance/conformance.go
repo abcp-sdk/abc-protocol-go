@@ -513,14 +513,14 @@ func testMailbox(t *testing.T, newPair Factory) {
 	time.Sleep(100 * time.Millisecond)
 
 	session := "sess-mb-" + protocol.NewID()[:8]
-	if err := a.PublishMailbox(ctx, T, session, "user_prompt", map[string]any{"text": "hello"}); err != nil {
+	if err := a.PublishMailbox(ctx, T, session, "trigger", map[string]any{"text": "hello"}, "user"); err != nil {
 		t.Fatal(err)
 	}
 	m, ok := awaitMailbox(received, session)
 	if !ok {
 		t.Fatal("mailbox message not delivered")
 	}
-	if m.Type != "user_prompt" {
+	if m.Type != "trigger" || m.Source != "user" {
 		t.Fatalf("mailbox = %+v", m)
 	}
 }
